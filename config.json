@@ -1,0 +1,7 @@
+{
+    "cooldown_seconds": 120,
+    "motion_threshold": 25,
+    "server_ip_address": "10.0.0.124",
+    "server_port": 9445,
+    "log_level": "INFO"
+}
