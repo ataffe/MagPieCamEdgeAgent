@@ -48,7 +48,7 @@ class Camera:
                 # send_img_for_prediction(frame, app_config.config.server_ip_address, app_config.config.server_port)
                 send_video_clip(self.h264_encoder, app_config.config.server_ip_address, app_config.config.server_port)
                 last_trigger_time = time.perf_counter()
-                logger.debug(f"Motion detected, cooling down for {app_config.config.cooldown_seconds} seconds")
+                logger.info(f"Motion detected, cooling down for {app_config.config.cooldown_seconds} seconds")
             
             # Yield control back to api event loop.
             await asyncio.sleep(0.05)
