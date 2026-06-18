@@ -270,8 +270,12 @@ class BYTETracker(object):
         self.tracked_stracks = joint_stracks(self.tracked_stracks, refind_stracks)
         self.lost_stracks = sub_stracks(self.lost_stracks, self.tracked_stracks)
         self.lost_stracks.extend(lost_stracks)
-        self.lost_stracks = sub_stracks(self.lost_stracks, self.removed_stracks)
-        self.removed_stracks.extend(removed_stracks)
+        # Only this frame's removals can still be in lost_stracks; tracks removed in
+        # earlier frames were already subtracted then. Using the full history here made
+        # removed_stracks grow unbounded (O(frames) work per update). Use the local list
+        # and stop accumulating.
+        self.lost_stracks = sub_stracks(self.lost_stracks, removed_stracks)
+        self.removed_stracks = removed_stracks
         self.tracked_stracks, self.lost_stracks = remove_duplicate_stracks(self.tracked_stracks, self.lost_stracks)
         # get scores of lost tracks
         output_stracks = [track for track in self.tracked_stracks if track.is_activated]

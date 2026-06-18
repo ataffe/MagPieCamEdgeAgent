@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(g++ --version)",
+      "Bash(cmake --version)",
+      "Read(//usr/include/**)",
+      "Bash(pkg-config --modversion eigen3)",
+      "Bash(python3 -c \"import lap; print\\('lap', lap.__version__ if hasattr\\(lap,'__version__'\\) else 'ok'\\)\")",
+      "Bash(python3 -c \"import cython_bbox; print\\('cython_bbox ok'\\)\")",
+      "Bash(pkg-config --modversion libcamera)",
+      "Bash(timeout 25 ssh -o BatchMode=yes -o ConnectTimeout=10 alex@10.0.0.144 ' *)",
+      "Bash(timeout 420 ssh *)"
+    ]
+  }
+}
