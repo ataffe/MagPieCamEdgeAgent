@@ -1,5 +1,5 @@
 # ScoutCamCameraClient
-A camera client designed to run on a Raspberry Pi Zero 2W. The client using the Raspberry Pi AI camera to 
+A camera client designed to run on a Raspberry Pi Zero 2W. The client uses the Raspberry Pi AI camera to 
 detect moving objects and sends images to the Scout Cam Event Processor to determine if a user rule should be
 triggered.
 
