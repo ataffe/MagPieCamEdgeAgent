@@ -38,7 +38,7 @@
 
 using namespace std::chrono;
   using byte_track::BYTETracker;
-  using byte_track::Object;
+  using byte_track::DetectedObject;
   using byte_track::Vec4;
 
   namespace {

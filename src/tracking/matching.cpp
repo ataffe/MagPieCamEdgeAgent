@@ -6,7 +6,7 @@
 #include <limits>
 
 namespace byte_track {
-
+    
 double iou(const Vec4& A, const Vec4& B) {
     const double iw = std::min(A[2], B[2]) - std::max(A[0], B[0]) + 1.0;
     if (iw <= 0) return 0.0;
