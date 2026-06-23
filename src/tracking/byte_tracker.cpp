@@ -1,5 +1,6 @@
 // Copyright © 2026 Alexander Taffe
 
+#include "../../include/tracking/byte_tracker.h"
 #include "tracking/byte_tracker.h"
 #include "tracking/matching.h"
 #include <algorithm>
@@ -67,7 +68,7 @@ void BYTETracker::reset() {
     STrack::reset_count();
 }
 
-std::vector<STrackPtr> BYTETracker::update(const std::vector<Object>& objects) {
+std::vector<STrackPtr> BYTETracker::update(const std::vector<DetectedObject>& objects) {
     frame_id_++;
     std::vector<STrackPtr> activated, refind, lost, removed;
 

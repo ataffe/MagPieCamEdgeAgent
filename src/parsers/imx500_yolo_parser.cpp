@@ -22,10 +22,10 @@ uint32_t rd_u32(const uint8_t* p) { uint32_t v; std::memcpy(&v, p, 4); return v;
 uint16_t rd_u16(const uint8_t* p) { uint16_t v; std::memcpy(&v, p, 2); return v; }
 }  // namespace
 
-std::vector<Object> parse_imx500_detections(const float* tensor, size_t tensor_len,
-                                            const uint8_t* info, size_t info_len,
-                                            bool bbox_normalization, double input_h) {
-    std::vector<Object> out;
+std::vector<DetectedObject> parse_imx500_detections(const float *tensor, size_t tensor_len,
+                                                    const uint8_t *info, size_t info_len,
+                                                    bool bbox_normalization, double input_h) {
+    std::vector<DetectedObject> out;
     if (!tensor || !info || info_len < NAME_LEN + 4) return out;
 
     uint32_t num_tensors = rd_u32(info + NAME_LEN);
