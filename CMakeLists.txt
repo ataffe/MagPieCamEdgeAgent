@@ -12,11 +12,6 @@ endif()
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
 
-# --- Camera Client ---
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBCAMERA REQUIRED libcamera)
-pkg_check_modules(OPENCV    REQUIRED opencv4)
-
 # --- ByteTrack core (no external dependencies; all matrices are <= 8x8) ---
 add_library(bytetrack
         src/tracking/kalman_filter.cpp
@@ -26,30 +21,41 @@ add_library(bytetrack
 target_include_directories(bytetrack PUBLIC include)
 set_target_properties(bytetrack PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# The boost program_options dev package (symlink + cmake config) isn't installed,
-# but the versioned runtime .so is. Link it directly by full path. NAMES carries
-# the soname so we don't depend on a -dev symlink.
-find_library(BOOST_PROGRAM_OPTIONS
-        NAMES boost_program_options libboost_program_options.so.1.83.0
-        PATHS /usr/lib/aarch64-linux-gnu)
-if(NOT BOOST_PROGRAM_OPTIONS)
-        message(FATAL_ERROR "libboost_program_options not found")
-endif()
+# --- Camera Client ---
+# The `track` executable needs the Raspberry Pi camera stack (libcamera, OpenCV,
+# rpicam-apps), which only exists on the Pi. Keep it ON for the device build, but
+# let CI / dev machines turn it OFF to build just the library and unit tests.
+option(BUILD_CAMERA_APP "Build the libcamera-based camera client (track)" ON)
+if(BUILD_CAMERA_APP)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBCAMERA REQUIRED libcamera)
+    pkg_check_modules(OPENCV    REQUIRED opencv4)
 
-add_executable(track src/main_track.cpp
-        src/parsers/imx500_yolo_parser.cpp
-        src/server/mjpeg_server.cpp)
-target_include_directories(track PRIVATE
-        include
-        /usr/include/rpicam-apps)
-target_compile_options(track PRIVATE
-        ${LIBCAMERA_CFLAGS} ${OPENCV_CFLAGS})
-target_link_libraries(track PRIVATE
-        bytetrack
-        rpicam_app          # the rpicam-apps shared library
-        ${LIBCAMERA_LIBRARIES}
-        ${OPENCV_LIBRARIES}
-        ${BOOST_PROGRAM_OPTIONS})
+    # The boost program_options dev package (symlink + cmake config) isn't installed,
+    # but the versioned runtime .so is. Link it directly by full path. NAMES carries
+    # the soname so we don't depend on a -dev symlink.
+    find_library(BOOST_PROGRAM_OPTIONS
+            NAMES boost_program_options libboost_program_options.so.1.83.0
+            PATHS /usr/lib/aarch64-linux-gnu)
+    if(NOT BOOST_PROGRAM_OPTIONS)
+            message(FATAL_ERROR "libboost_program_options not found")
+    endif()
+
+    add_executable(track src/main_track.cpp
+            src/parsers/imx500_yolo_parser.cpp
+            src/server/mjpeg_server.cpp)
+    target_include_directories(track PRIVATE
+            include
+            /usr/include/rpicam-apps)
+    target_compile_options(track PRIVATE
+            ${LIBCAMERA_CFLAGS} ${OPENCV_CFLAGS})
+    target_link_libraries(track PRIVATE
+            bytetrack
+            rpicam_app          # the rpicam-apps shared library
+            ${LIBCAMERA_LIBRARIES}
+            ${OPENCV_LIBRARIES}
+            ${BOOST_PROGRAM_OPTIONS})
+endif()
 
 # --- Unit tests (GoogleTest) ---
 # Off by default so the normal Pi build stays lean and offline. Enable with:
