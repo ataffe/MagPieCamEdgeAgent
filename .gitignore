@@ -70,3 +70,7 @@ Testing/
 # IDE files
 .idea
 .idea/*
+# Backend credentials — secret, never commit (use credentials.example.json as a template)
+config/backend/credentials.json
+
+.DS_Store

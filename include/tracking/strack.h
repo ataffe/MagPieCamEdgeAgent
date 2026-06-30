@@ -3,6 +3,8 @@
 #pragma once
 #include <memory>
 #include <vector>
+#include <chrono>
+
 #include "linalg.h"
 #include "kalman_filter.h"
 
@@ -35,8 +37,9 @@ public:
      * @param tlwh  Bounding box as `(top-left x, top-left y, width, height)`.
      * @param score Detection confidence.
      * @param label Class label.
+     * @param delay_noise_ms Noise for track send delay.
      */
-    STrack(const Vec4& tlwh, double score, int label);
+    STrack(const Vec4& tlwh, double score, int label, int delay_noise_ms = 0);
 
     /// @brief Return the next monotonically increasing track id.
     /// @return A fresh, unique track id.
@@ -100,6 +103,21 @@ public:
     /// @return The box in tlwh form.
     static Vec4 tlbr_to_tlwh(const Vec4& tlbr);
 
+    /// @brief Determines if this track should trigger a frame to be sent to the backend.
+    /// @return True if the track should trigger a frame to be sent, False otherwise.
+    bool is_ready_to_send() const;
+
+    /// @brief Increments the number of times this track has triggered an image to be sent to the backend.
+    /// Also resets the last send time for the track.
+    void increment_send_count();
+
+    /// @brief Returns the current required wait between uploads for this track in milliseconds.
+    /// Grows exponentially with each send and is capped at @ref kMaxDelayMs.
+    int get_current_delay() const;
+
+    /// Maximum upload interval, in milliseconds, regardless of how many sends have occurred.
+    static constexpr int kMaxDelayMs = 300'000;
+
     bool is_activated = false;                       ///< True once the track is confirmed.
     int track_id = 0;                                ///< Unique id (0 until activated).
     int state = static_cast<int>(TrackState::New);   ///< Current @ref TrackState.
@@ -115,6 +133,14 @@ private:
     Mat cov_;                     ///< 8x8 Kalman covariance.
     bool has_state_ = false;      ///< True once @ref activate has set up the state.
     static int count_;            ///< Shared track-id counter.
+
+
+    // Time tracking for delayed notifications
+    int send_count_ = 0;
+    // TODO(project): Make this configurable.
+    int base_wait_time_multiplier_ = 2;
+    int delay_noise_ms_ = 0;
+    std::chrono::time_point<std::chrono::steady_clock> last_frame_send_time_;
 };
 
 /// Shared-ownership handle to an @ref STrack.
