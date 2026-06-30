@@ -1,0 +1,7 @@
+{
+    "scout_cam_webservice": {
+        "base_url": "http://10.0.0.125:8000",
+        "token_endpoint": "/v1/auth/token/",
+        "presign_endpoint": "/v1/uploads/presign"
+    }
+}

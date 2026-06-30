@@ -55,7 +55,7 @@ static void remove_duplicate_stracks(std::vector<STrackPtr>& a, std::vector<STra
 }
 
 BYTETracker::BYTETracker(double track_thresh, double match_thresh, int track_buffer, double frame_rate)
-    : track_thresh_(track_thresh), match_thresh_(match_thresh) {
+    : track_thresh_(track_thresh), match_thresh_(match_thresh), noise_generator_(rd_()), uniform_dist_(0, 500) {
     det_thresh_ = track_thresh + 0.1;
     max_time_lost_ = static_cast<int>(frame_rate / 30.0 * track_buffer);
 }
@@ -75,10 +75,11 @@ std::vector<STrackPtr> BYTETracker::update(const std::vector<DetectedObject>& ob
     // Split detections by score into high / low.
     std::vector<STrackPtr> dets, dets_second;
     for (const auto& o : objects) {
+        int delay_noise = uniform_dist_(noise_generator_);
         if (o.score > track_thresh_)
-            dets.push_back(std::make_shared<STrack>(STrack::tlbr_to_tlwh(o.tlbr), o.score, o.label));
+            dets.push_back(std::make_shared<STrack>(STrack::tlbr_to_tlwh(o.tlbr), o.score, o.label, delay_noise));
         else if (o.score > 0.1 && o.score < track_thresh_)
-            dets_second.push_back(std::make_shared<STrack>(STrack::tlbr_to_tlwh(o.tlbr), o.score, o.label));
+            dets_second.push_back(std::make_shared<STrack>(STrack::tlbr_to_tlwh(o.tlbr), o.score, o.label, delay_noise));
     }
 
     // Split current tracks into confirmed / unconfirmed.

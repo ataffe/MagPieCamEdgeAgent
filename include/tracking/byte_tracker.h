@@ -2,6 +2,8 @@
 
 #pragma once
 #include <vector>
+#include <random>
+
 #include "linalg.h"
 #include "kalman_filter.h"
 #include "strack.h"
@@ -12,17 +14,24 @@
  */
 namespace byte_track {
 
-/**
- * @brief A single detection fed into the tracker for one frame.
- *
- * The box is stored in tlbr form `(x1, y1, x2, y2)`, matching what
- * `bytetrack/byte_tracker.py` receives (boxes are tlbr there too).
- */
-struct DetectedObject {
-    Vec4 tlbr;     ///< Bounding box `(x1, y1, x2, y2)`.
-    double score;  ///< Detection confidence.
-    int label;     ///< Class label.
-};
+    /**
+     * @brief A single detection fed into the tracker for one frame.
+     *
+     * The box is stored in tlbr form `(x1, y1, x2, y2)`, matching what
+     * `bytetrack/byte_tracker.py` receives (boxes are tlbr there too).
+     */
+    struct DetectedObject {
+        Vec4 tlbr;     ///< Bounding box `(x1, y1, x2, y2)`.
+        double score;  ///< Detection confidence.
+        int label;     ///< Class label.
+    };
+
+    /// @brief Snapshot of a confirmed track ready to be drawn or passed to the upload pipeline.
+    struct Drawable {
+        Vec4 tlwh;  ///< Bounding box `(x, y, width, height)`.
+        int id;     ///< Track id.
+        int label;  ///< Class label.
+    };
 
 /**
  * @brief ByteTrack multi-object tracker.
@@ -67,6 +76,11 @@ private:
     double det_thresh_;       ///< Score required to start a new track.
     int max_time_lost_;       ///< Max frames a track may stay lost before removal.
     KalmanFilter kf_;         ///< Shared motion model for all tracks.
+
+    // Noise generator for exponential backoff with noise
+    std::random_device rd_;
+    std::mt19937 noise_generator_;
+    std::uniform_int_distribution<int> uniform_dist_;
 };
 
 }  // namespace byte_track
