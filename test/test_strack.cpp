@@ -125,3 +125,50 @@ TEST_F(STrackTest, ReactivateCanAssignNewId) {
     EXPECT_EQ(t.frame_id, 4);
     EXPECT_EQ(t.track_id, 2);  // new id pulled from the counter
 }
+
+// --- send delay / exponential backoff ------------------------------------
+
+TEST_F(STrackTest, IsReadyToSendTrueBeforeFirstSend) {
+    STrack t({0, 0, 10, 10}, 0.9, 0);
+    EXPECT_TRUE(t.is_ready_to_send());
+}
+
+TEST_F(STrackTest, IsReadyToSendFalseImmediatelyAfterFirstSend) {
+    STrack t({0, 0, 10, 10}, 0.9, 0);
+    t.increment_send_count();
+    // Delay after first send is 2^1 * 1000 ms = 2 s; far more than test latency.
+    EXPECT_FALSE(t.is_ready_to_send());
+}
+
+TEST_F(STrackTest, GetCurrentDelayDoublesOnEachIncrement) {
+    STrack t({0, 0, 10, 10}, 0.9, 0, /*delay_noise_ms=*/0);
+    t.increment_send_count();  // send_count_ = 1 → 2^1 * 1000
+    EXPECT_EQ(t.get_current_delay(), 2000);
+    t.increment_send_count();  // send_count_ = 2 → 2^2 * 1000
+    EXPECT_EQ(t.get_current_delay(), 4000);
+    t.increment_send_count();  // send_count_ = 3 → 2^3 * 1000
+    EXPECT_EQ(t.get_current_delay(), 8000);
+}
+
+TEST_F(STrackTest, DelayNoiseIsAddedToCurrentDelay) {
+    STrack t({0, 0, 10, 10}, 0.9, 0, /*delay_noise_ms=*/250);
+    t.increment_send_count();
+    EXPECT_EQ(t.get_current_delay(), 2250);
+    t.increment_send_count();
+    EXPECT_EQ(t.get_current_delay(), 4250);
+}
+
+TEST_F(STrackTest, DelayIsCappedAtMaxDelayMs) {
+    STrack t({0, 0, 10, 10}, 0.9, 0, /*delay_noise_ms=*/0);
+    for (int i = 0; i < 100; ++i) t.increment_send_count();
+    EXPECT_EQ(t.get_current_delay(), STrack::kMaxDelayMs);
+}
+
+TEST_F(STrackTest, IsReadyToSendRespectsCap) {
+    // At high send counts the cap kicks in; is_ready_to_send() must still work
+    // (i.e. no overflow / undefined behaviour in get_current_delay()).
+    STrack t({0, 0, 10, 10}, 0.9, 0, /*delay_noise_ms=*/0);
+    for (int i = 0; i < 100; ++i) t.increment_send_count();
+    // Timer was just reset on the last increment, so still not ready.
+    EXPECT_FALSE(t.is_ready_to_send());
+}

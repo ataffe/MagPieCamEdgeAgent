@@ -2,11 +2,6 @@
 
   // src/main_track.cpp
   //
-  // Standalone (loop-driven) version of byte_track_stage.cpp. Instead of running
-  // as an rpicam-apps post-processing stage, we own main() and the camera event
-  // loop ourselves - the shape the larger project needs so it can, per new track,
-  // push a frame onto a queue (e.g. RabbitMQ) for cloud/LLM alerting.
-  //
   // The IMX500 only produces inference (the rpi::CnnOutputTensor metadata) once
   // its network firmware (.rpk) has been uploaded to the sensor. That upload is
   // NOT something the standalone app does for free - in the post-processing
@@ -15,36 +10,44 @@
   // just that stage), and let it do the firmware upload + per-frame tensor work.
   // Our own tracking / drawing / streaming then runs in the PostProcessor's
   // result callback, where CnnOutputTensor is guaranteed to be present.
-  #include <csignal>
-  #include <cstdio>
-  #include <cstring>
-  #include <fstream>
-  #include <string>
-  #include <vector>
+#include <csignal>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <string>
+#include <vector>
+#include <stdexcept>
+#include <unordered_map>
 
-  #include <libcamera/control_ids.h>
-  #include <libcamera/controls.h>
-  #include <opencv2/imgcodecs.hpp>
-  #include <opencv2/imgproc.hpp>
+#include <chrono>
+#include <cmath>
+#include <unordered_set>
 
-  #include "core/buffer_sync.hpp"
-  #include "core/completed_request.hpp"
-  #include "core/rpicam_app.hpp"  // also pulls in core/post_processor.hpp
-  #include "core/video_options.hpp"
+#include <libcamera/control_ids.h>
+#include <libcamera/controls.h>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+#include <argparse/argparse.hpp>
 
-  #include "tracking/byte_tracker.h"
-  #include "parsers/imx500_yolo_parser.h"
-  #include "server/mjpeg_server.h"
+#include "../include/tracking/byte_tracker.h"
+#include "core/buffer_sync.hpp"
+#include "core/completed_request.hpp"
+#include "core/rpicam_app.hpp"  // also pulls in core/post_processor.hpp
+#include "core/video_options.hpp"
+
+#include "tracking/byte_tracker.h"
+#include "parsers/imx500_yolo_parser.h"
+#include "server/mjpeg_server.h"
 
 using namespace std::chrono;
-  using byte_track::BYTETracker;
-  using byte_track::DetectedObject;
-  using byte_track::Vec4;
+using byte_track::BYTETracker;
+using byte_track::DetectedObject;
+using byte_track::Vec4;
 
   namespace {
   // Paths the standalone app needs. The post-process file loads only the IMX500
   // firmware-upload stage; the libs dir is the same one run.sh stages.
-  const char *kPostProcFile = "/home/alex/ScoutCamCameraClient/config/imx500_config.json";
+  const char *kPostProcFile = "/home/alex/ScoutCamCameraClient/config/ml/imx500_config.json";
   const char *kPostProcLibs = "/home/alex/ScoutCamCameraClient/libs";
   const char *kLabelsFile   = "/home/alex/ScoutCamCameraClient/labels/coco_labels_no_space.txt";
 
@@ -67,6 +70,35 @@ using namespace std::chrono;
   }
   }  // namespace
 
+
+
+void add_args(argparse::ArgumentParser &parser)
+{
+      parser.add_argument("--debug")
+      .help("Enable debug including server that streams video to port 8001")
+      .flag();
+}
+
+void draw_bounding_boxes(cv::Mat &bgr, std::vector<byte_track::Drawable> &tracks, int w, int h, std::vector<std::string> &labels)
+{
+      // ByteTrack boxes are in the 640x480 inference space; scale to the
+      // lores stream's actual dimensions (matches byte_track_stage.cpp).
+      const double sx = w / 640.0;
+      const double sy = h / 480.0;
+      for (const auto &d : tracks)
+      {
+          cv::Rect box(cvRound(d.tlwh[0] * sx), cvRound(d.tlwh[1] * sy),
+                       cvRound(d.tlwh[2] * sx), cvRound(d.tlwh[3] * sy));
+          cv::rectangle(bgr, box, cv::Scalar(0, 255, 0), 2);
+          std::string cls = (d.label >= 0 && d.label < (int)labels.size())
+                            ? labels[d.label] : std::to_string(d.label);
+          std::string lbl = "Id:" + std::to_string(d.id) + " " + cls;
+          cv::Point org(box.x + 4, box.y + 16);
+          cv::putText(bgr, lbl, org, cv::FONT_HERSHEY_SIMPLEX, 0.5, {0,0,0},       3, cv::LINE_AA);
+          cv::putText(bgr, lbl, org, cv::FONT_HERSHEY_SIMPLEX, 0.5, {0,206,138},   1, cv::LINE_AA);
+      }
+}
+
   static volatile bool quit = false;
   static void sig_handler(int) { quit = true; }
 
@@ -77,10 +109,24 @@ using namespace std::chrono;
 
       RPiCamApp app(std::make_unique<VideoOptions>());
       Options *opts = app.GetOptions();
+      argparse::ArgumentParser parser("Scout Camera Client");
 
       // Parse standard rpicam-apps flags (--width, --height, --framerate, etc.).
-      if (!opts->Parse(argc, argv))
+      if (char *dummy[1]; !opts->Parse(1, dummy))
           return 1;
+
+      add_args(parser);
+      try
+      {
+          parser.parse_args(argc, argv);
+      } catch (const std::exception &err)
+      {
+          std::cerr << err.what() << std::endl;
+          std::cerr << parser;
+          std::exit(1);
+      }
+
+      bool debug = parser.get<bool>("--debug");
 
       // Small lores stream for overlay/JPEG; main stream carries full-res frames.
       opts->Set().lores_width  = 640;
@@ -106,9 +152,10 @@ using namespace std::chrono;
 
       BYTETracker tracker(0.5, 0.8, 30, opts->Get().framerate.value_or(30.0f));
 
-      byte_track::MjpegServer server(8000);
+      byte_track::MjpegServer server(8001);
       server.start();
-      std::fprintf(stderr, "streaming on :8000\n");
+      std::fprintf(stderr, "streaming on :8001\n");
+      std::vector<byte_track::Drawable> last_tracks;
 
       std::vector<std::string> labels;
       {
@@ -118,10 +165,8 @@ using namespace std::chrono;
               if (!line.empty()) labels.push_back(line);
       }
 
-      struct Drawable { Vec4 tlwh; int id; int label; };
-      std::vector<Drawable> last_tracks;
       unsigned infer_frames = 0;
-
+      int num_frames_sent = 0;
       // The PostProcessor delivers each request here AFTER the imx500 stage has
       // run, so CnnOutputTensor is present. This runs on the PostProcessor's
       // output thread; it is the only thread touching tracker/server/last_tracks.
@@ -138,20 +183,32 @@ using namespace std::chrono;
 
               auto tracks = tracker.update(objs);
 
+              // TODO(project): Replace last tracks with active_track_id
               last_tracks.clear();
+              bool send_frame = false;
               for (auto &t : tracks)
+              {
                   last_tracks.push_back({t->tlwh(), t->track_id, t->label});
+                  if (t->is_ready_to_send()) {
+                      send_frame = true;
+                      t->increment_send_count();
+                  }
+              }
 
-              if (++infer_frames % 30 == 0)
+              if (++infer_frames % 30 == 0 && debug)
                   std::fprintf(stderr, "[track] infer_frame %u | dets=%zu tracks=%zu | cam_fps=%.1f\n",
                                infer_frames, objs.size(), tracks.size(), req->framerate);
 
-              // TODO(project): on a newly-seen track_id, push this frame onto the
-              // RabbitMQ queue for the cloud/LLM alerting service.
+              if (send_frame)
+              {
+                  // TODO(project): on a newly-seen track_id, push this frame onto the
+                  // RabbitMQ queue for the cloud/LLM alerting service.
+                  std::cout << "Sending frame" << ++num_frames_sent << " to the backend." << std::endl;
+              }
           }
 
           // --- Draw + JPEG encode only when someone is watching ---
-          if (!server.has_clients())
+          if (!server.has_clients() || !debug)
               return;
 
           libcamera::Stream *stream = app.LoresStream();
@@ -162,32 +219,19 @@ using namespace std::chrono;
           if (it == req->buffers.end()) return;
 
           StreamInfo si = app.GetStreamInfo(stream);
-          const int w = static_cast<int>(si.width)  & ~1;
-          const int h = static_cast<int>(si.height) & ~1;
+          const int width = static_cast<int>(si.width)  & ~1;
+          const int height = static_cast<int>(si.height) & ~1;
 
           BufferReadSync r(&app, it->second);
           const auto &planes = r.Get();
           if (planes.empty()) return;
 
           cv::Mat bgr;
-          yuv420_to_bgr(planes, w, h, si.stride, bgr);
+          yuv420_to_bgr(planes, width, height, si.stride, bgr);
 
           // ByteTrack boxes are in the 640x480 inference space; scale to the
           // lores stream's actual dimensions (matches byte_track_stage.cpp).
-          const double sx = w / 640.0;
-          const double sy = h / 480.0;
-          for (const auto &d : last_tracks) {
-              cv::Rect box(cvRound(d.tlwh[0] * sx), cvRound(d.tlwh[1] * sy),
-                           cvRound(d.tlwh[2] * sx), cvRound(d.tlwh[3] * sy));
-              cv::rectangle(bgr, box, cv::Scalar(0, 255, 0), 2);
-              std::string cls = (d.label >= 0 && d.label < (int)labels.size())
-                                ? labels[d.label] : std::to_string(d.label);
-              std::string lbl = "Id:" + std::to_string(d.id) + " " + cls;
-              cv::Point org(box.x + 4, box.y + 16);
-              cv::putText(bgr, lbl, org, cv::FONT_HERSHEY_SIMPLEX, 0.5, {0,0,0},       3, cv::LINE_AA);
-              cv::putText(bgr, lbl, org, cv::FONT_HERSHEY_SIMPLEX, 0.5, {0,206,138},   1, cv::LINE_AA);
-          }
-
+          draw_bounding_boxes(bgr, last_tracks, width, height, labels);
           std::vector<uint8_t> jpg;
           cv::imencode(".jpg", bgr, jpg, {cv::IMWRITE_JPEG_QUALITY, 80});
           server.set_frame(jpg.data(), jpg.size());
