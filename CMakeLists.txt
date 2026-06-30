@@ -17,6 +17,10 @@ include(FetchContent)
 # cpr
 FetchContent_Declare(cpr GIT_REPOSITORY https://github.com/libcpr/cpr.git
         GIT_TAG 1.14.2)
+# libpsl (a curl dependency added in cpr 1.14) requires meson to build from
+# source, which is not available on CI runners. Disable it — it is only needed
+# for cookie domain validation, which this client does not use.
+set(CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(cpr)
 
 # nlohmann/json
