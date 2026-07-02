@@ -4,11 +4,11 @@
 #include "upload/image_uploader.h"
 
 #include <fstream>
-#include <iostream>
 #include <stdexcept>
 
 #include <cpr/cpr.h>
 #include <nlohmann/json.hpp>
+#include <spdlog/spdlog.h>
 
 using json = nlohmann::json;
 
@@ -32,8 +32,8 @@ void dump_error_body(const std::string &what, const cpr::Response &response) {
     constexpr char kErrorFile[] = "error.html";
     std::ofstream out(kErrorFile);
     out << response.text;
-    std::cerr << "ImageUploader: " << what << " failed (HTTP " << response.status_code
-              << "), wrote response body to " << kErrorFile << std::endl;
+    spdlog::error("[ImageUploader] {} failed (HTTP {}), wrote response body to {}",
+                  what, response.status_code, kErrorFile);
 }
 
 } // namespace
@@ -51,7 +51,7 @@ ImageUploader::BackendConfig ImageUploader::load_backend_config(const std::strin
             svc.at("presign_endpoint").get<std::string>(),
         };
     } catch (const json::exception &e) {
-        throw std::runtime_error("ImageUploader: invalid backend config " + path + ": " + e.what());
+        throw std::runtime_error("[ImageUploader] Invalid backend config " + path + ": " + e.what());
     }
 }
 
@@ -90,17 +90,17 @@ std::optional<std::string> ImageUploader::get_jwt_token() {
         dump_error_body("token request", response);
         return std::nullopt;
     }
+    spdlog::debug("[Image Uploader] Successfully retrieved JWT with status code: {}", response.status_code);
 
     try {
         return json::parse(response.text).at("access").get<std::string>();
     } catch (const json::exception &e) {
-        std::cerr << "ImageUploader: malformed token response: " << e.what() << std::endl;
+        spdlog::error("[ImageUploader] Malformed token response: {}", e.what());
         return std::nullopt;
     }
 }
 
-std::optional<ImageUploader::PresignedUpload>
-ImageUploader::get_presigned_url(const std::string &jwt_token) {
+std::optional<ImageUploader::PresignedUpload> ImageUploader::get_presigned_url(const std::string &jwt_token) {
     cpr::Response response = cpr::Post(
         cpr::Url{backend_.base_url + backend_.presign_endpoint},
         cpr::Header{{"Authorization", "Bearer " + jwt_token}});
@@ -109,6 +109,7 @@ ImageUploader::get_presigned_url(const std::string &jwt_token) {
         dump_error_body("presign request", response);
         return std::nullopt;
     }
+    spdlog::debug("[Image Uploader] Successfully retrieved presigned url with status code: {}", response.status_code);
 
     try {
         const json parsed = json::parse(response.text);
@@ -117,7 +118,7 @@ ImageUploader::get_presigned_url(const std::string &jwt_token) {
             parsed.at("key").get<std::string>(),
         };
     } catch (const json::exception &e) {
-        std::cerr << "ImageUploader: malformed presign response: " << e.what() << std::endl;
+        spdlog::error("[ImageUploader] Malformed presign response: {}", e.what());
         return std::nullopt;
     }
 }
@@ -132,19 +133,19 @@ bool ImageUploader::put_to_storage(const PresignedUpload &target,
 
     // S3 returns 200 OK for a successful presigned PUT.
     if (response.status_code != 200) {
-        dump_error_body("storage upload", response);
+        spdlog::error("[Image Uploader] Upload with presigned url failed. Response code: {} | Body: {}",
+            response.status_code, response.text);
         return false;
     }
 
-    std::cout << "ImageUploader: uploaded " << image.size() << " bytes to key " << target.key
-              << std::endl;
+    spdlog::info("[ImageUploader] Uploaded {} bytes to key {}", image.size(), target.key);
     return true;
 }
 
 bool ImageUploader::upload_image(const std::vector<uint8_t> &image,
                                  const std::string &content_type) {
     if (image.empty()) {
-        std::cerr << "ImageUploader: refusing to upload empty image" << std::endl;
+        spdlog::error("[ImageUploader] Refusing to upload empty image.");
         return false;
     }
 
