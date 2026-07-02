@@ -28,8 +28,10 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <argparse/argparse.hpp>
+#include <spdlog/spdlog.h>
 
 #include "../include/tracking/byte_tracker.h"
+#include "../include/upload/image_uploader.h"
 #include "core/buffer_sync.hpp"
 #include "core/completed_request.hpp"
 #include "core/rpicam_app.hpp"  // also pulls in core/post_processor.hpp
@@ -38,18 +40,24 @@
 #include "tracking/byte_tracker.h"
 #include "parsers/imx500_yolo_parser.h"
 #include "server/mjpeg_server.h"
+#include "upload/image_uploader.h"
 
 using namespace std::chrono;
 using byte_track::BYTETracker;
 using byte_track::DetectedObject;
 using byte_track::Vec4;
 
+
   namespace {
-  // Paths the standalone app needs. The post-process file loads only the IMX500
-  // firmware-upload stage; the libs dir is the same one run.sh stages.
-  const char *kPostProcFile = "/home/alex/ScoutCamCameraClient/config/ml/imx500_config.json";
-  const char *kPostProcLibs = "/home/alex/ScoutCamCameraClient/libs";
-  const char *kLabelsFile   = "/home/alex/ScoutCamCameraClient/labels/coco_labels_no_space.txt";
+      // Paths the standalone app needs. The post-process file loads only the IMX500
+      // firmware-upload stage; the libs dir is the same one run.sh stages.
+      const char *kPostProcFile = "/home/alex/ScoutCamCameraClient/config/ml/imx500_config.json";
+      const char *kPostProcLibs = "/home/alex/ScoutCamCameraClient/libs";
+      const char *kLabelsFile   = "/home/alex/ScoutCamCameraClient/labels/coco_labels_no_space.txt";
+      const char *kBackendConfig = "/home/alex/ScoutCamCameraClient/config/backend/backend_config.json";
+      const char *kBackendCredentials = "/home/alex/ScoutCamCameraClient/config/backend/credentials.json";
+
+
 
   void yuv420_to_bgr(const std::vector<libcamera::Span<uint8_t>> &planes, int w, int h, int stride, cv::Mat &bgr)
   {
@@ -121,12 +129,13 @@ void draw_bounding_boxes(cv::Mat &bgr, std::vector<byte_track::Drawable> &tracks
           parser.parse_args(argc, argv);
       } catch (const std::exception &err)
       {
-          std::cerr << err.what() << std::endl;
+          spdlog::error("{}", err.what());
           std::cerr << parser;
           std::exit(1);
       }
 
       bool debug = parser.get<bool>("--debug");
+      spdlog::set_level(debug ? spdlog::level::debug : spdlog::level::info);
 
       // Small lores stream for overlay/JPEG; main stream carries full-res frames.
       opts->Set().lores_width  = 640;
@@ -154,7 +163,7 @@ void draw_bounding_boxes(cv::Mat &bgr, std::vector<byte_track::Drawable> &tracks
 
       byte_track::MjpegServer server(8001);
       server.start();
-      std::fprintf(stderr, "streaming on :8001\n");
+      spdlog::info("streaming on :8001");
       std::vector<byte_track::Drawable> last_tracks;
 
       std::vector<std::string> labels;
@@ -165,8 +174,14 @@ void draw_bounding_boxes(cv::Mat &bgr, std::vector<byte_track::Drawable> &tracks
               if (!line.empty()) labels.push_back(line);
       }
 
+      ImageUploader::BackendConfig backend_config = ImageUploader::load_backend_config(kBackendConfig);
+      ImageUploader::Credentials backend_credentials = ImageUploader::load_credentials(kBackendCredentials);
+      ImageUploader uploader(backend_config, backend_credentials);
+
       unsigned infer_frames = 0;
-      int num_frames_sent = 0;
+      bool send_frame = false;
+      int sent_frames = 0;
+
       // The PostProcessor delivers each request here AFTER the imx500 stage has
       // run, so CnnOutputTensor is present. This runs on the PostProcessor's
       // output thread; it is the only thread touching tracker/server/last_tracks.
@@ -185,7 +200,6 @@ void draw_bounding_boxes(cv::Mat &bgr, std::vector<byte_track::Drawable> &tracks
 
               // TODO(project): Replace last tracks with active_track_id
               last_tracks.clear();
-              bool send_frame = false;
               for (auto &t : tracks)
               {
                   last_tracks.push_back({t->tlwh(), t->track_id, t->label});
@@ -195,22 +209,12 @@ void draw_bounding_boxes(cv::Mat &bgr, std::vector<byte_track::Drawable> &tracks
                   }
               }
 
-              if (++infer_frames % 30 == 0 && debug)
-                  std::fprintf(stderr, "[track] infer_frame %u | dets=%zu tracks=%zu | cam_fps=%.1f\n",
-                               infer_frames, objs.size(), tracks.size(), req->framerate);
-
-              if (send_frame)
-              {
-                  // TODO(project): on a newly-seen track_id, push this frame onto the
-                  // RabbitMQ queue for the cloud/LLM alerting service.
-                  std::cout << "Sending frame" << ++num_frames_sent << " to the backend." << std::endl;
-              }
+              if (++infer_frames % 30 == 0)
+                  spdlog::debug("[Track] infer_frame {} | dets={} tracks={} | cam_fps={:.1f}",
+                                infer_frames, objs.size(), tracks.size(), req->framerate);
           }
 
           // --- Draw + JPEG encode only when someone is watching ---
-          if (!server.has_clients() || !debug)
-              return;
-
           libcamera::Stream *stream = app.LoresStream();
           if (!stream) stream = app.GetMainStream();
           if (!stream) return;
@@ -229,12 +233,24 @@ void draw_bounding_boxes(cv::Mat &bgr, std::vector<byte_track::Drawable> &tracks
           cv::Mat bgr;
           yuv420_to_bgr(planes, width, height, si.stride, bgr);
 
-          // ByteTrack boxes are in the 640x480 inference space; scale to the
-          // lores stream's actual dimensions (matches byte_track_stage.cpp).
-          draw_bounding_boxes(bgr, last_tracks, width, height, labels);
           std::vector<uint8_t> jpg;
           cv::imencode(".jpg", bgr, jpg, {cv::IMWRITE_JPEG_QUALITY, 80});
-          server.set_frame(jpg.data(), jpg.size());
+          if (send_frame && ++sent_frames < 5)
+          {
+              if (uploader.upload_image(jpg)) {
+                  spdlog::info("[Track] Successfully uploaded image to storage.");
+              }
+              send_frame = false;
+          }
+
+          if (server.has_clients()) {
+              // ByteTrack boxes are in the 640x480 inference space; scale to the
+              // lores stream's actual dimensions (matches byte_track_stage.cpp).
+              draw_bounding_boxes(bgr, last_tracks, width, height, labels);
+              cv::imencode(".jpg", bgr, jpg, {cv::IMWRITE_JPEG_QUALITY, 80});
+              server.set_frame(jpg.data(), jpg.size());
+          }
+
       });
 
       app.StartCamera();

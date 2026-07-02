@@ -1,0 +1,29 @@
+# System (apt) packages required to build ScoutCamCameraClient.
+# Install with: ./install-deps.sh
+#
+# Lines starting with # are comments; blank lines are ignored.
+
+# --- Build tools ---
+cmake
+ninja-build
+build-essential
+pkg-config
+git
+
+# --- Raspberry Pi camera stack (BUILD_CAMERA_APP=ON) ---
+libcamera-dev
+librpicam-app-dev
+libopencv-dev
+
+# --- HTTP client (cpr/image_uploader) ---
+# Must be present so cpr links the system libcurl instead of building its own
+# from source (CPR_USE_SYSTEM_CURL in CMakeLists.txt). Building curl from
+# source produces unversioned symbols that conflict with opencv_imgcodecs'
+# libhdf5 dependency, which requires the system libcurl's versioned symbols.
+libcurl4-openssl-dev
+
+# --- Boost ---
+# CMakeLists.txt links the runtime .so directly by full path (no -dev package
+# installed), since the versioned package name below changes across Debian
+# releases. Kept here so a fresh machine has the runtime lib available.
+libboost-program-options1.83.0

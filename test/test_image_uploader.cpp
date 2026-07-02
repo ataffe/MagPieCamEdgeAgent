@@ -46,7 +46,7 @@ protected:
     }
 
     std::string backend_path(const std::string &contents) {
-        return write_file("backend.json", contents);
+        return write_file("backend_config.json", contents);
     }
 
     std::string creds_path(const std::string &contents) {
