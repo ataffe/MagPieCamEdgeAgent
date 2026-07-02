@@ -28,6 +28,14 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Install dependencies
+      # cpr is built with CPR_USE_SYSTEM_CURL=ON (see CMakeLists.txt), so the
+      # system libcurl dev package must be present for find_package(CURL) to
+      # succeed.
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libcurl4-openssl-dev
+
     - name: Configure CMake
       run: >
         cmake -B ${{ github.workspace }}/build

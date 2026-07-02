@@ -7,9 +7,12 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <string>
+
+#include <spdlog/spdlog.h>
 
 namespace byte_track {
 
@@ -35,7 +38,7 @@ MjpegServer::~MjpegServer() { stop(); }
 
 void MjpegServer::start() {
     listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (listen_fd_ < 0) { perror("[mjpeg] socket"); return; }
+    if (listen_fd_ < 0) { spdlog::error("[mjpeg] socket: {}", std::strerror(errno)); return; }
     int one = 1;
     ::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
@@ -44,20 +47,20 @@ void MjpegServer::start() {
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(static_cast<uint16_t>(port_));
     if (::bind(listen_fd_, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
-        perror("[mjpeg] bind");
+        spdlog::error("[mjpeg] bind: {}", std::strerror(errno));
         ::close(listen_fd_);
         listen_fd_ = -1;
         return;
     }
     if (::listen(listen_fd_, 8) < 0) {
-        perror("[mjpeg] listen");
+        spdlog::error("[mjpeg] listen: {}", std::strerror(errno));
         ::close(listen_fd_);
         listen_fd_ = -1;
         return;
     }
     running_ = true;
     accept_thread_ = std::thread([this] { accept_loop(); });
-    std::fprintf(stderr, "[mjpeg] serving on http://0.0.0.0:%d/\n", port_);
+    spdlog::info("[mjpeg] serving on http://0.0.0.0:{}/", port_);
 }
 
 void MjpegServer::stop() {

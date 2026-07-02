@@ -21,6 +21,12 @@ FetchContent_Declare(cpr GIT_REPOSITORY https://github.com/libcpr/cpr.git
 # source, which is not available on CI runners. Disable it — it is only needed
 # for cookie domain validation, which this client does not use.
 set(CPR_CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
+# Use the system's libcurl (requires libcurl4-openssl-dev) instead of building
+# our own from source. opencv_imgcodecs pulls in the system libhdf5, which is
+# linked against the system libcurl's *versioned* symbols (CURL_OPENSSL_4). A
+# self-built curl exports unversioned symbols, so it can't satisfy hdf5's
+# reference and the final link fails with undefined `curl_*@CURL_OPENSSL_4`.
+set(CPR_USE_SYSTEM_CURL ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(cpr)
 
 # nlohmann/json
@@ -29,13 +35,16 @@ FetchContent_Declare(json
         GIT_TAG v3.11.3)
 FetchContent_MakeAvailable(json)
 
-add_executable(presigned_test src/get_presigned_test.cpp)
-target_link_libraries(presigned_test PRIVATE cpr::cpr nlohmann_json::nlohmann_json)
+# spdlog
+FetchContent_Declare(spdlog
+        GIT_REPOSITORY https://github.com/gabime/spdlog.git
+        GIT_TAG v1.15.1)
+FetchContent_MakeAvailable(spdlog)
 
 # --- Image uploader (presigned-URL upload to S3) ---
 add_library(image_uploader src/upload/image_uploader.cpp)
 target_include_directories(image_uploader PUBLIC include)
-target_link_libraries(image_uploader PUBLIC cpr::cpr nlohmann_json::nlohmann_json)
+target_link_libraries(image_uploader PUBLIC cpr::cpr nlohmann_json::nlohmann_json spdlog::spdlog)
 set_target_properties(image_uploader PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 
@@ -83,12 +92,21 @@ if(BUILD_CAMERA_APP)
             /usr/include/rpicam-apps)
     target_compile_options(track PRIVATE
             ${LIBCAMERA_CFLAGS} ${OPENCV_CFLAGS})
+    # Link only the OpenCV modules actually used (imgproc, imgcodecs) rather than
+    # every module in opencv4.pc. Pulling in the full list drags in opencv_hdf,
+    # which links the system libcurl (versioned symbols) — conflicting with the
+    # unversioned libcurl built from source by cpr's FetchContent and breaking
+    # the link with undefined `curl_*@CURL_OPENSSL_4` references.
     target_link_libraries(track PRIVATE
             bytetrack
             rpicam_app # the rpicam-apps shared library
             argparse
+            image_uploader
+            spdlog::spdlog
             ${LIBCAMERA_LIBRARIES}
-            ${OPENCV_LIBRARIES}
+            opencv_core
+            opencv_imgproc
+            opencv_imgcodecs
             ${BOOST_PROGRAM_OPTIONS})
 endif()
 
