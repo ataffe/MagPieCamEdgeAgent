@@ -5,7 +5,7 @@
         "presign_endpoint": "/v1/cameras/presigned_upload_url/",
         "registration_endpoint": "/v1/cameras/register/",
         "serial_number_file": "/sys/firmware/devicetree/base/serial-number",
-        "claim_token": "REDACTED-ROTATED-SEE-LATER-COMMIT",
+        "claim_token_path": "/home/alex/ScoutCamCameraClient/credentials/claim_token",
         "credentials_path": "/home/alex/ScoutCamCameraClient/credentials/credentials.json"
     }
 }

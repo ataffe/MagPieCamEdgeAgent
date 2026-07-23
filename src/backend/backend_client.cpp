@@ -4,6 +4,7 @@
 #include "backend/backend_client.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -42,6 +43,26 @@ void dump_error_body(const std::string &what, const cpr::Response &response) {
                   what, response.status_code, kErrorFile);
 }
 
+// Reads a file fully into a string, stripping stray NUL bytes and trailing
+// whitespace -- both common in identifiers/secrets read from sysfs or
+// hand-edited files. Returns std::nullopt if the file can't be opened.
+std::optional<std::string> read_trimmed_file(const std::string &path) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        return std::nullopt;
+    }
+
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string contents = buffer.str();
+
+    contents.erase(std::remove(contents.begin(), contents.end(), '\0'), contents.end());
+    while (!contents.empty() && std::isspace(static_cast<unsigned char>(contents.back()))) {
+        contents.pop_back();
+    }
+    return contents;
+}
+
 } // namespace
 
 BackendClient::BackendClient(const std::string &config_path) {
@@ -59,7 +80,7 @@ BackendClient::BackendConfig BackendClient::load_backend_config(const std::strin
             svc.at("presign_endpoint").get<std::string>(),
             svc.at("registration_endpoint").get<std::string>(),
             svc.at("serial_number_file").get<std::string>(),
-            svc.at("claim_token").get<std::string>(),
+            svc.at("claim_token_path").get<std::string>(),
             svc.at("credentials_path").get<std::string>(),
         };
     } catch (const json::exception &e) {
@@ -172,56 +193,54 @@ void BackendClient::load_credentials() {
 
 void BackendClient::register_camera() {
     spdlog::info("[BackendClient] Registering camera.");
-    if (std::optional<std::string> serial_number = read_pi_serial_number(); serial_number.has_value()) {
-        json body;
-        body["device_id"] = serial_number.value();
-        body["claim_token"] = backend_.claim_token;
 
-        cpr::Response response = cpr::Post(
+    const auto serial_number = read_pi_serial_number();
+    if (!serial_number.has_value()) {
+        throw std::runtime_error("[BackendClient] Unable to read pi serial number.");
+    }
+
+    const auto claim_token = read_trimmed_file(backend_.claim_token_path);
+    if (!claim_token.has_value()) {
+        throw std::runtime_error("[BackendClient] Unable to read claim token from " + backend_.claim_token_path);
+    }
+
+    json body;
+    body["device_id"] = *serial_number;
+    body["claim_token"] = *claim_token;
+
+    cpr::Response response = cpr::Post(
         cpr::Url{backend_.base_url + backend_.registration_endpoint},
         cpr::Header{{"Content-Type", "application/json"}},
         cpr::Body{body.dump()});
 
-        if (response.status_code != 201) {
-            spdlog::error("Unable to register camera. Status Code: {} | Error: {}",
-                response.status_code, response.text);
-            throw std::runtime_error("[BackendClient] Camera registration failed.");
-        }
-
-        try {
-            json parsed_credentials = json::parse(response.text);
-            public_camera_id = parsed_credentials.at("public_camera_id").get<std::string>();
-            device_token = parsed_credentials.at("device_token").get<std::string>();
-        } catch (const json::exception &e) {
-            throw std::runtime_error("[BackendClient] Unable to parse registration response: " + std::string(e.what()));
-        }
-
-        json creds_to_save;
-        creds_to_save["public_camera_id"] = public_camera_id;
-        creds_to_save["device_token"] = device_token;
-
-        spdlog::info("[BackendClient] Retrieved credentials, saving to: {}", backend_.credentials_path);
-        save_credentials_atomic(creds_to_save.dump(4));
-        spdlog::info("[BackendClient] Saved credentials.");
-    } else {
-        throw std::runtime_error("[BackendClient] Unable to read pi serial number.");
+    if (response.status_code != 201) {
+        spdlog::error("Unable to register camera. Status Code: {} | Error: {}",
+            response.status_code, response.text);
+        throw std::runtime_error("[BackendClient] Camera registration failed.");
     }
+
+    try {
+        json parsed_credentials = json::parse(response.text);
+        public_camera_id = parsed_credentials.at("public_camera_id").get<std::string>();
+        device_token = parsed_credentials.at("device_token").get<std::string>();
+    } catch (const json::exception &e) {
+        throw std::runtime_error("[BackendClient] Unable to parse registration response: " + std::string(e.what()));
+    }
+
+    json creds_to_save;
+    creds_to_save["public_camera_id"] = public_camera_id;
+    creds_to_save["device_token"] = device_token;
+
+    spdlog::info("[BackendClient] Retrieved credentials, saving to: {}", backend_.credentials_path);
+    save_credentials_atomic(creds_to_save.dump(4));
+    spdlog::info("[BackendClient] Saved credentials.");
 }
 
 std::optional<std::string> BackendClient::read_pi_serial_number() {
-    std::optional<std::string> serial_number;
-    std::ifstream file(backend_.serial_number_file);
-    if (!file.is_open()) {
+    auto serial_number = read_trimmed_file(backend_.serial_number_file);
+    if (!serial_number.has_value()) {
         spdlog::error("Could not open serial-number file");
-        return std::nullopt;
     }
-
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    std::string contents = buffer.str();
-
-    contents.erase(std::remove(contents.begin(), contents.end(), '\0'), contents.end());
-    serial_number = contents;
     return serial_number;
 }
 

@@ -53,11 +53,12 @@ protected:
         return path.string();
     }
 
-    // Writes a backend_config.json whose credentials_path / serial_number_file
-    // point inside this test's isolated temp dir (unless overridden), and
-    // returns its path.
+    // Writes a backend_config.json whose credentials_path / serial_number_file /
+    // claim_token_path point inside this test's isolated temp dir (unless
+    // overridden), and returns its path.
     std::string backend_config_path(const std::string &credentials_path = "",
-                                     const std::string &serial_number_file = "") {
+                                     const std::string &serial_number_file = "",
+                                     const std::string &claim_token_path = "") {
         json cfg;
         cfg["scout_cam_webservice"] = {
             {"base_url", "http://10.0.0.125:8000"},
@@ -66,7 +67,8 @@ protected:
             {"registration_endpoint", "/v1/cameras/register/"},
             {"serial_number_file",
              serial_number_file.empty() ? (dir_ / "no_such_serial_file").string() : serial_number_file},
-            {"claim_token", "test-claim-token"},
+            {"claim_token_path",
+             claim_token_path.empty() ? (dir_ / "no_such_claim_token").string() : claim_token_path},
             {"credentials_path",
              credentials_path.empty() ? (dir_ / "device_credentials.json").string() : credentials_path},
         };
@@ -83,7 +85,7 @@ constexpr char kValidBackend[] = R"({
         "presign_endpoint": "/v1/uploads/presign",
         "registration_endpoint": "/v1/cameras/register/",
         "serial_number_file": "/sys/firmware/devicetree/base/serial-number",
-        "claim_token": "test-claim-token",
+        "claim_token_path": "/tmp/backend_client_test_claim_token",
         "credentials_path": "/tmp/backend_client_test_credentials.json"
     }
 })";
@@ -99,7 +101,7 @@ TEST_F(BackendClientConfigTest, ParsesBackendConfigFields) {
     EXPECT_EQ(cfg.presign_endpoint, "/v1/uploads/presign");
     EXPECT_EQ(cfg.registration_endpoint, "/v1/cameras/register/");
     EXPECT_EQ(cfg.serial_number_file, "/sys/firmware/devicetree/base/serial-number");
-    EXPECT_EQ(cfg.claim_token, "test-claim-token");
+    EXPECT_EQ(cfg.claim_token_path, "/tmp/backend_client_test_claim_token");
     EXPECT_EQ(cfg.credentials_path, "/tmp/backend_client_test_credentials.json");
 }
 
@@ -147,6 +149,14 @@ TEST_F(BackendClientConfigTest, ThrowsWhenCredentialsMissingAndSerialNumberUnrea
     // exist either, so registration fails before it would ever need the
     // network -- keeps this test hermetic.
     EXPECT_THROW(BackendClient client(backend_config_path()), std::runtime_error);
+}
+
+TEST_F(BackendClientConfigTest, ThrowsWhenClaimTokenFileMissing) {
+    // Serial number is readable, but the claim token file (a separate,
+    // gitignored file so the secret never lands in backend_config.json)
+    // isn't there -- registration should fail without ever hitting the network.
+    const std::string serial_path = write_file("serial", "1234567890abcdef");
+    EXPECT_THROW(BackendClient client(backend_config_path("", serial_path)), std::runtime_error);
 }
 
 TEST_F(BackendClientConfigTest, ThrowsWhenCachedCredentialsAreMalformed) {

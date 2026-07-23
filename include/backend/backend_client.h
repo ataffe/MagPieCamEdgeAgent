@@ -23,14 +23,16 @@
 // registration only needs to happen once. See config/backend/.
 class BackendClient {
 public:
-    // Non-secret backend endpoints.
+    // Non-secret backend endpoints and paths. claim_token_path and
+    // credentials_path point at separate (gitignored) files -- the secrets
+    // themselves never live in this (committed) config.
     struct BackendConfig {
         std::string base_url;
         std::string token_endpoint;
         std::string presign_endpoint;
         std::string registration_endpoint;
         std::string serial_number_file;
-        std::string claim_token;
+        std::string claim_token_path;
         std::string credentials_path;
     };
 
