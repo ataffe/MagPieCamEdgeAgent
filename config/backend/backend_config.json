@@ -1,7 +1,11 @@
 {
     "scout_cam_webservice": {
-        "base_url": "http://10.0.0.125:8000",
-        "token_endpoint": "/v1/auth/token/",
-        "presign_endpoint": "/v1/uploads/presign"
+        "base_url": "http://10.0.0.126:8000",
+        "token_endpoint": "/v1/cameras/auth/token/",
+        "presign_endpoint": "/v1/cameras/presigned_upload_url/",
+        "registration_endpoint": "/v1/cameras/register/",
+        "serial_number_file": "/sys/firmware/devicetree/base/serial-number",
+        "claim_token_path": "/home/alex/ScoutCamCameraClient/credentials/claim_token",
+        "credentials_path": "/home/alex/ScoutCamCameraClient/credentials/credentials.json"
     }
 }

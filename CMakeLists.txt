@@ -41,11 +41,11 @@ FetchContent_Declare(spdlog
         GIT_TAG v1.15.1)
 FetchContent_MakeAvailable(spdlog)
 
-# --- Image uploader (presigned-URL upload to S3) ---
-add_library(image_uploader src/upload/image_uploader.cpp)
-target_include_directories(image_uploader PUBLIC include)
-target_link_libraries(image_uploader PUBLIC cpr::cpr nlohmann_json::nlohmann_json spdlog::spdlog)
-set_target_properties(image_uploader PROPERTIES POSITION_INDEPENDENT_CODE ON)
+# --- Backend client (camera registration + presigned-URL upload to S3) ---
+add_library(backend_client src/backend/backend_client.cpp)
+target_include_directories(backend_client PUBLIC include)
+target_link_libraries(backend_client PUBLIC cpr::cpr nlohmann_json::nlohmann_json spdlog::spdlog)
+set_target_properties(backend_client PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 
 # --- ByteTrack core (no external dependencies; all matrices are <= 8x8) ---
@@ -101,7 +101,7 @@ if(BUILD_CAMERA_APP)
             bytetrack
             rpicam_app # the rpicam-apps shared library
             argparse
-            image_uploader
+            backend_client
             spdlog::spdlog
             ${LIBCAMERA_LIBRARIES}
             opencv_core
@@ -133,11 +133,11 @@ if(BUILD_TESTING)
             test/test_kalman_filter.cpp
             test/test_byte_tracker.cpp
             test/test_imx500_yolo_parser.cpp
-            test/test_image_uploader.cpp
+            test/test_backend_client.cpp
             # The parser lives in the `track` exe, not the bytetrack lib, but it only
             # depends on byte_tracker.h (no libcamera), so compile it straight in.
             src/parsers/imx500_yolo_parser.cpp)
-    target_link_libraries(bytetrack_tests PRIVATE bytetrack image_uploader GTest::gtest_main)
+    target_link_libraries(bytetrack_tests PRIVATE bytetrack backend_client GTest::gtest_main)
 
     include(GoogleTest)
     gtest_discover_tests(bytetrack_tests)

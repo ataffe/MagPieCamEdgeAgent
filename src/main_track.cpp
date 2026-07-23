@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 #include <stdexcept>
@@ -31,7 +32,7 @@
 #include <spdlog/spdlog.h>
 
 #include "../include/tracking/byte_tracker.h"
-#include "../include/upload/image_uploader.h"
+#include "../include/backend/backend_client.h"
 #include "core/buffer_sync.hpp"
 #include "core/completed_request.hpp"
 #include "core/rpicam_app.hpp"  // also pulls in core/post_processor.hpp
@@ -40,7 +41,7 @@
 #include "tracking/byte_tracker.h"
 #include "parsers/imx500_yolo_parser.h"
 #include "server/mjpeg_server.h"
-#include "upload/image_uploader.h"
+#include "backend/backend_client.h"
 
 using namespace std::chrono;
 using byte_track::BYTETracker;
@@ -54,8 +55,7 @@ using byte_track::Vec4;
       const char *kPostProcFile = "/home/alex/ScoutCamCameraClient/config/ml/imx500_config.json";
       const char *kPostProcLibs = "/home/alex/ScoutCamCameraClient/libs";
       const char *kLabelsFile   = "/home/alex/ScoutCamCameraClient/labels/coco_labels_no_space.txt";
-      const char *kBackendConfig = "/home/alex/ScoutCamCameraClient/config/backend/backend_config.json";
-      const char *kBackendCredentials = "/home/alex/ScoutCamCameraClient/config/backend/credentials.json";
+      const char *kBackendConfigPath = "/home/alex/ScoutCamCameraClient/config/backend/backend_config.json";
 
 
 
@@ -174,9 +174,17 @@ void draw_bounding_boxes(cv::Mat &bgr, std::vector<byte_track::Drawable> &tracks
               if (!line.empty()) labels.push_back(line);
       }
 
-      ImageUploader::BackendConfig backend_config = ImageUploader::load_backend_config(kBackendConfig);
-      ImageUploader::Credentials backend_credentials = ImageUploader::load_credentials(kBackendCredentials);
-      ImageUploader uploader(backend_config, backend_credentials);
+
+      // Constructing BackendClient registers the camera with the backend (a
+      // network call) if no cached credentials exist yet. A transient network
+      // outage at boot shouldn't stop local tracking/streaming, so this stays
+      // best-effort: on failure we simply run without upload support.
+      std::optional<BackendClient> backend_client;
+      try {
+          backend_client.emplace(kBackendConfigPath);
+      } catch (const std::exception &err) {
+          spdlog::error("[Track] Backend client unavailable, continuing without uploads: {}", err.what());
+      }
 
       unsigned infer_frames = 0;
       bool send_frame = false;
@@ -235,9 +243,9 @@ void draw_bounding_boxes(cv::Mat &bgr, std::vector<byte_track::Drawable> &tracks
 
           std::vector<uint8_t> jpg;
           cv::imencode(".jpg", bgr, jpg, {cv::IMWRITE_JPEG_QUALITY, 80});
-          if (send_frame && ++sent_frames < 5)
+          if (backend_client && send_frame && sent_frames++ < 3)
           {
-              if (uploader.upload_image(jpg)) {
+              if (backend_client->upload_image(jpg)) {
                   spdlog::info("[Track] Successfully uploaded image to storage.");
               }
               send_frame = false;
