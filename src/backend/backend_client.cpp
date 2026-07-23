@@ -72,10 +72,10 @@ std::optional<std::string> BackendClient::get_jwt_token() {
         cpr::Url{backend_.base_url + backend_.token_endpoint},
         cpr::Header{
             {"Content-Type", "application/json"},
-            {"Device", device_token}});
+            {"Authorization", "Device " +  device_token}});
 
     if (response.status_code != 200) {
-        dump_error_body("token request", response);
+        spdlog::error("Unable to retrieve JWT. Status Code: {} | Response {}", response.status_code ,response.text);
         return std::nullopt;
     }
     spdlog::debug("[BackendClient] Successfully retrieved JWT with status code: {}", response.status_code);
