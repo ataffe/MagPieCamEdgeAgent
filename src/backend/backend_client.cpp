@@ -79,6 +79,7 @@ BackendClient::BackendConfig BackendClient::load_backend_config(const std::strin
             svc.at("token_endpoint").get<std::string>(),
             svc.at("presign_endpoint").get<std::string>(),
             svc.at("registration_endpoint").get<std::string>(),
+            svc.at("update_preview_time_endpoint").get<std::string>(),
             svc.at("serial_number_file").get<std::string>(),
             svc.at("claim_token_path").get<std::string>(),
             svc.at("credentials_path").get<std::string>(),
@@ -109,9 +110,10 @@ std::optional<std::string> BackendClient::get_jwt_token() {
     }
 }
 
-std::optional<BackendClient::PresignedUpload> BackendClient::get_presigned_url(const std::string &jwt_token) {
+std::optional<BackendClient::PresignedUpload> BackendClient::get_presigned_url(const std::string &jwt_token, const std::string &upload_type) {
     cpr::Response response = cpr::Post(
         cpr::Url{backend_.base_url + backend_.presign_endpoint},
+        cpr::Parameters{{"upload_type", upload_type}},
         cpr::Header{{"Authorization", "Bearer " + jwt_token}});
 
     if (response.status_code != 200) {
@@ -130,6 +132,21 @@ std::optional<BackendClient::PresignedUpload> BackendClient::get_presigned_url(c
         spdlog::error("[BackendClient] Malformed presign response: {}", e.what());
         return std::nullopt;
     }
+}
+
+bool BackendClient::update_preview_time(const std::string &jwt_token) {
+    cpr::Response response = cpr::Post(
+        cpr::Url{backend_.base_url + backend_.update_preview_time_endpoint},
+        cpr::Header{{"Authorization", "Bearer " + jwt_token}});
+
+    if (response.status_code != 200) {
+        spdlog::error("[BackendClient] Failed to update preview time. Status Code: {} | Response: {}",
+                      response.status_code, response.text);
+        return false;
+    }
+
+    spdlog::debug("[BackendClient] Successfully updated preview time.");
+    return true;
 }
 
 bool BackendClient::put_to_storage(const PresignedUpload &target,
@@ -152,7 +169,8 @@ bool BackendClient::put_to_storage(const PresignedUpload &target,
 }
 
 bool BackendClient::upload_image(const std::vector<uint8_t> &image,
-                                 const std::string &content_type) {
+                                 const std::string &content_type,
+                                 const std::string &upload_type) {
     if (image.empty()) {
         spdlog::error("[BackendClient] Refusing to upload empty image.");
         return false;
@@ -163,12 +181,20 @@ bool BackendClient::upload_image(const std::vector<uint8_t> &image,
         return false;
     }
 
-    const auto target = get_presigned_url(*jwt_token);
+    const auto target = get_presigned_url(*jwt_token, upload_type);
     if (!target) {
         return false;
     }
 
-    return put_to_storage(*target, image, content_type);
+    if (!put_to_storage(*target, image, content_type)) {
+        return false;
+    }
+
+    if (upload_type == "CAMERA_PREVIEW") {
+        update_preview_time(*jwt_token);
+    }
+
+    return true;
 }
 
 void BackendClient::load_credentials() {

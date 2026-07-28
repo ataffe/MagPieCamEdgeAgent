@@ -31,6 +31,7 @@ public:
         std::string token_endpoint;
         std::string presign_endpoint;
         std::string registration_endpoint;
+        std::string update_preview_time_endpoint;
         std::string serial_number_file;
         std::string claim_token_path;
         std::string credentials_path;
@@ -44,9 +45,12 @@ public:
     static BackendConfig load_backend_config(const std::string &config_path);
 
     // Returns true if the image was successfully uploaded to storage.
-    // content_type is the MIME type sent to S3 (defaults to JPEG).
+    // content_type is the MIME type sent to S3 (defaults to JPEG). upload_type
+    // is sent to the backend's presign endpoint to categorize the image (e.g.
+    // "DETECTION", "CAMERA_PREVIEW").
     bool upload_image(const std::vector<uint8_t> &image,
-                      const std::string &content_type = "image/jpeg");
+                      const std::string &content_type = "image/jpeg",
+                      const std::string &upload_type = "DETECTION");
 
 private:
     struct PresignedUpload {
@@ -55,7 +59,8 @@ private:
     };
 
     std::optional<std::string> get_jwt_token();
-    std::optional<PresignedUpload> get_presigned_url(const std::string &jwt_token);
+    std::optional<PresignedUpload> get_presigned_url(const std::string &jwt_token, const std::string &upload_type);
+    bool update_preview_time(const std::string &jwt_token);
     bool put_to_storage(const PresignedUpload &target,
                         const std::vector<uint8_t> &image,
                         const std::string &content_type);
