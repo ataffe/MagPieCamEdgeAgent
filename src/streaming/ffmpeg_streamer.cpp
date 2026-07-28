@@ -5,16 +5,20 @@
 #include <csignal>
 #include <cerrno>
 #include <cstring>
+#include <fstream>
+#include <stdexcept>
 #include <utility>
 
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
 namespace byte_track {
 
 using namespace std::chrono;
+using json = nlohmann::json;
 
 namespace {
 // How long to wait before respawning ffmpeg after it dies. Long enough that a
@@ -23,7 +27,71 @@ namespace {
 constexpr auto kRestartDelay = seconds(2);
 // Grace period for ffmpeg to flush and exit after its stdin is closed.
 constexpr auto kShutdownTimeout = seconds(3);
+// Section of the client config file holding the streaming settings.
+constexpr char kConfigSection[] = "streaming";
+
+// Overwrites `out` only if `key` is present, so absent keys keep their default.
+// Throws json::type_error if the value is present but of the wrong type.
+template <typename T>
+void read_field(const json &obj, const char *key, T &out)
+{
+    if (const auto it = obj.find(key); it != obj.end())
+        out = it->get<T>();
+}
 }  // namespace
+
+FfmpegStreamer::Config FfmpegStreamer::Config::from_file(const std::string &path)
+{
+    std::ifstream in(path);
+    if (!in)
+        throw std::runtime_error("FfmpegStreamer: could not open config file: " + path);
+
+    json doc;
+    try {
+        doc = json::parse(in);
+    } catch (const json::parse_error &e) {
+        throw std::runtime_error("FfmpegStreamer: failed to parse " + path + ": " + e.what());
+    }
+
+    const auto section = doc.find(kConfigSection);
+    if (section == doc.end())
+        throw std::runtime_error("FfmpegStreamer: no \"" + std::string(kConfigSection) +
+                                 "\" section in " + path);
+
+    Config config;
+    try {
+        read_field(*section, "rtsp_url", config.rtsp_url);
+        read_field(*section, "width", config.width);
+        read_field(*section, "height", config.height);
+        read_field(*section, "framerate", config.framerate);
+        read_field(*section, "bitrate", config.bitrate);
+        read_field(*section, "encoder", config.encoder);
+        // Left unset, gop tracks framerate — see the Config declaration.
+        if (const auto it = section->find("gop"); it != section->end())
+            config.gop = it->get<int>();
+    } catch (const json::exception &e) {
+        throw std::runtime_error("FfmpegStreamer: invalid \"" + std::string(kConfigSection) +
+                                 "\" section in " + path + ": " + e.what());
+    }
+
+    // Catch nonsense here rather than letting it surface as an opaque ffmpeg
+    // failure several seconds into startup.
+    const auto require = [&path](bool ok, const char *what) {
+        if (!ok)
+            throw std::runtime_error("FfmpegStreamer: invalid \"" + std::string(kConfigSection) +
+                                     "\" section in " + path + ": " + what);
+    };
+    require(!config.rtsp_url.empty(), "rtsp_url must not be empty");
+    require(!config.encoder.empty(), "encoder must not be empty");
+    // H.264 needs even dimensions, and so does the I420 packing.
+    require(config.width > 0 && config.width % 2 == 0, "width must be positive and even");
+    require(config.height > 0 && config.height % 2 == 0, "height must be positive and even");
+    require(config.framerate > 0, "framerate must be positive");
+    require(config.bitrate > 0, "bitrate must be positive");
+    require(!config.gop || *config.gop > 0, "gop must be positive");
+
+    return config;
+}
 
 FfmpegStreamer::FfmpegStreamer(Config config) : config_(std::move(config)) {}
 
@@ -52,7 +120,7 @@ std::vector<std::string> FfmpegStreamer::build_args() const
         // Encode: the job rpicam-vid used to do before `-c:v copy`.
         "-c:v", config_.encoder,
         "-b:v", std::to_string(config_.bitrate),
-        "-g", std::to_string(config_.gop),
+        "-g", std::to_string(config_.gop.value_or(config_.framerate)),
         "-bf", "0",  // no B-frames: they only add latency on a live stream
     };
 

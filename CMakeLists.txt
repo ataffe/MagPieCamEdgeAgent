@@ -134,9 +134,12 @@ if(BUILD_TESTING)
             test/test_byte_tracker.cpp
             test/test_imx500_yolo_parser.cpp
             test/test_backend_client.cpp
-            # The parser lives in the `track` exe, not the bytetrack lib, but it only
-            # depends on byte_tracker.h (no libcamera), so compile it straight in.
-            src/parsers/imx500_yolo_parser.cpp)
+            test/test_ffmpeg_streamer.cpp
+            # The parser and the streamer live in the camera client exe, not the
+            # bytetrack lib, but neither depends on libcamera, so compile them
+            # straight in.
+            src/parsers/imx500_yolo_parser.cpp
+            src/streaming/ffmpeg_streamer.cpp)
     target_link_libraries(bytetrack_tests PRIVATE bytetrack backend_client GTest::gtest_main)
 
     include(GoogleTest)

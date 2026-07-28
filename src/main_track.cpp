@@ -103,28 +103,31 @@ void add_args(argparse::ArgumentParser &parser)
       .default_value(300)
       .scan<'i', int>();
 
+      // The streaming flags below have no defaults on purpose: unless one is
+      // passed explicitly, the value from the config file's "streaming" section
+      // wins. See the streaming setup in main().
       parser.add_argument("--rtsp-url")
-      .help("RTSP endpoint on the MediaMTX server to publish the video stream to")
-      .default_value(std::string("rtsp://10.0.0.126:8554/cam"));
+      .help("Override the configured RTSP endpoint to publish the video stream to");
 
       parser.add_argument("--stream-width")
-      .help("Width of the streamed video")
-      .default_value(1280)
+      .help("Override the configured width of the streamed video")
       .scan<'i', int>();
 
       parser.add_argument("--stream-height")
-      .help("Height of the streamed video")
-      .default_value(720)
+      .help("Override the configured height of the streamed video")
+      .scan<'i', int>();
+
+      parser.add_argument("--stream-framerate")
+      .help("Override the configured frame rate of the streamed video")
       .scan<'i', int>();
 
       parser.add_argument("--stream-bitrate")
-      .help("H.264 bitrate of the streamed video, in bits per second")
-      .default_value(2000000)
+      .help("Override the configured H.264 bitrate of the streamed video, in bits per second")
       .scan<'i', int>();
 
       parser.add_argument("--stream-encoder")
-      .help("ffmpeg H.264 encoder; h264_v4l2m2m is the Pi's hardware encoder, libx264 the CPU fallback")
-      .default_value(std::string("h264_v4l2m2m"));
+      .help("Override the configured ffmpeg H.264 encoder; h264_v4l2m2m is the Pi's hardware "
+            "encoder, libx264 the CPU fallback");
 
       parser.add_argument("--no-stream")
       .help("Disable RTSP video streaming (tracking and uploads still run)")
@@ -162,13 +165,34 @@ void add_args(argparse::ArgumentParser &parser)
       spdlog::set_level(debug ? spdlog::level::debug : spdlog::level::info);
 
       const auto preview_interval = seconds(parser.get<int>("--preview-interval-seconds"));
+
+      // --- Streaming configuration -----------------------------------------
+      // Three layers, each overriding the previous: the defaults baked into
+      // FfmpegStreamer::Config, the "streaming" section of the client config
+      // file, and finally any explicitly passed CLI flag. Bad config is not
+      // fatal -- tracking and uploads should still run.
+      auto stream_config = byte_track::FfmpegStreamer::Config();
+      try {
+          stream_config = byte_track::FfmpegStreamer::Config::from_file(kBackendConfigPath);
+      } catch (const std::exception &err) {
+          spdlog::warn("[Stream] Falling back to default streaming settings: {}", err.what());
+      }
+      if (parser.is_used("--rtsp-url"))         stream_config.rtsp_url  = parser.get<std::string>("--rtsp-url");
+      if (parser.is_used("--stream-width"))     stream_config.width     = parser.get<int>("--stream-width");
+      if (parser.is_used("--stream-height"))    stream_config.height    = parser.get<int>("--stream-height");
+      if (parser.is_used("--stream-framerate")) stream_config.framerate = parser.get<int>("--stream-framerate");
+      if (parser.is_used("--stream-bitrate"))   stream_config.bitrate   = parser.get<int>("--stream-bitrate");
+      if (parser.is_used("--stream-encoder"))   stream_config.encoder   = parser.get<std::string>("--stream-encoder");
+
       // Small lores stream for overlay/JPEG; main stream carries full-res frames.
       opts->Set().lores_width  = 640;
       opts->Set().lores_height = 480;
       // The main (viewfinder) stream is what gets encoded and pushed to RTSP, so
-      // it is sized to the requested stream resolution rather than the display's.
-      opts->Set().viewfinder_width  = parser.get<int>("--stream-width");
-      opts->Set().viewfinder_height = parser.get<int>("--stream-height");
+      // it is sized to the configured stream resolution rather than the display's,
+      // and the camera runs at the frame rate the stream is declared to have.
+      opts->Set().viewfinder_width  = stream_config.width;
+      opts->Set().viewfinder_height = stream_config.height;
+      opts->Set().framerate         = static_cast<float>(stream_config.framerate);
 
       app.OpenCamera();
 
@@ -188,7 +212,7 @@ void add_args(argparse::ArgumentParser &parser)
       // "Network Firmware Upload" progress; first run can take a while.
       post_processor.Configure();
 
-      BYTETracker tracker(0.5, 0.8, 30, opts->Get().framerate.value_or(30.0f));
+      BYTETracker tracker(0.5, 0.8, 30, opts->Get().framerate.value_or(static_cast<float>(stream_config.framerate)));
 
       // Constructing BackendClient registers the camera with the backend (a
       // network call) if no cached credentials exist yet. A transient network
@@ -203,8 +227,7 @@ void add_args(argparse::ArgumentParser &parser)
 
       // --- RTSP video streaming --------------------------------------------
       // The main stream's frames are packed and piped to ffmpeg, which encodes
-      // them to H.264 and publishes to MediaMTX. Sized from the stream libcamera
-      // actually gave us, which may differ from what we asked for.
+      // them to H.264 and publishes to MediaMTX.
       std::optional<byte_track::FfmpegStreamer> streamer;
       libcamera::Stream *video_stream = app.GetMainStream();
       if (parser.get<bool>("--no-stream")) {
@@ -217,16 +240,18 @@ void add_args(argparse::ArgumentParser &parser)
               spdlog::error("[Stream] Main stream is {}, expected YUV420; continuing without video streaming",
                             si.pixel_format.toString());
           } else {
-              byte_track::FfmpegStreamer::Config cfg;
-              cfg.rtsp_url  = parser.get<std::string>("--rtsp-url");
-              cfg.width     = static_cast<int>(si.width)  & ~1;
-              cfg.height    = static_cast<int>(si.height) & ~1;
-              cfg.framerate = static_cast<int>(std::lround(opts->Get().framerate.value_or(30.0f)));
-              cfg.bitrate   = parser.get<int>("--stream-bitrate");
-              cfg.gop       = cfg.framerate;  // one keyframe per second, as --intra 30 did at 30fps
-              cfg.encoder   = parser.get<std::string>("--stream-encoder");
+              // libcamera may not have granted exactly the size we asked for, so
+              // the encoder is told what the stream actually is.
+              const int actual_width  = static_cast<int>(si.width)  & ~1;
+              const int actual_height = static_cast<int>(si.height) & ~1;
+              if (actual_width != stream_config.width || actual_height != stream_config.height) {
+                  spdlog::warn("[Stream] Camera gave {}x{}, not the configured {}x{}; streaming at the former",
+                               actual_width, actual_height, stream_config.width, stream_config.height);
+                  stream_config.width  = actual_width;
+                  stream_config.height = actual_height;
+              }
 
-              streamer.emplace(cfg);
+              streamer.emplace(stream_config);
               if (!streamer->start()) {
                   spdlog::error("[Stream] Could not start ffmpeg, continuing without video streaming");
                   streamer.reset();

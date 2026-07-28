@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -46,10 +47,30 @@ public:
         int height = 720;
         int framerate = 30;
         int bitrate = 2000000;   // bits/sec, matches rpicam-vid --bitrate
-        int gop = 30;            // keyframe interval, matches rpicam-vid --intra
+        // Keyframe interval (rpicam-vid --intra). Unset means one keyframe per
+        // second, i.e. it tracks `framerate` however that ends up being set.
+        std::optional<int> gop;
         // Pi 4 has a hardware H.264 encoder behind bcm2835-codec; libx264 is the
         // portable (CPU) fallback.
         std::string encoder = "h264_v4l2m2m";
+
+        // Reads the "streaming" section of the client config JSON, e.g.
+        //
+        //   "streaming": {
+        //       "rtsp_url": "rtsp://10.0.0.126:8554/cam",
+        //       "width": 1280, "height": 720,
+        //       "framerate": 30, "bitrate": 2000000,
+        //       "encoder": "h264_v4l2m2m"
+        //   }
+        //
+        // Every key is optional and falls back to the default above. "gop" is
+        // the one key not in the committed config; left out, it tracks
+        // `framerate` (one keyframe per second, what --intra 30 gave at 30fps).
+        //
+        // Throws std::runtime_error if the file is missing or malformed, if
+        // there is no "streaming" section, or if a value is the wrong type or
+        // out of range — callers decide whether that is fatal.
+        static Config from_file(const std::string &path);
     };
 
     explicit FfmpegStreamer(Config config);

@@ -8,5 +8,13 @@
         "serial_number_file": "/sys/firmware/devicetree/base/serial-number",
         "claim_token_path": "/home/alex/ScoutCamCameraClient/credentials/claim_token",
         "credentials_path": "/home/alex/ScoutCamCameraClient/credentials/credentials.json"
+    },
+    "streaming": {
+        "rtsp_url": "rtsp://10.0.0.126:8554/cam",
+        "width": 1280,
+        "height": 720,
+        "framerate": 30,
+        "bitrate": 2000000,
+        "encoder": "h264_v4l2m2m"
     }
 }
