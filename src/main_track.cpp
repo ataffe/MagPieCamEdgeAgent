@@ -26,6 +26,7 @@
 
 #include <libcamera/control_ids.h>
 #include <libcamera/controls.h>
+#include <libcamera/formats.h>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <argparse/argparse.hpp>
@@ -41,6 +42,7 @@
 #include "tracking/byte_tracker.h"
 #include "parsers/imx500_yolo_parser.h"
 #include "backend/backend_client.h"
+#include "streaming/ffmpeg_streamer.h"
 
 using namespace std::chrono;
 using byte_track::BYTETracker;
@@ -57,7 +59,12 @@ using byte_track::Vec4;
 
 
 
-  void yuv420_to_bgr(const std::vector<libcamera::Span<uint8_t>> &planes, int w, int h, int stride, cv::Mat &bgr)
+  // libcamera hands out YUV420 with row padding (stride >= width) and, on some
+  // formats, the chroma planes packed behind the luma one. Repack it into a
+  // tightly packed I420 buffer, which is what both OpenCV and ffmpeg's rawvideo
+  // demuxer expect. `out` is reused across frames so this doesn't allocate.
+  void pack_i420(const std::vector<libcamera::Span<uint8_t>> &planes, int w, int h, int stride,
+                 std::vector<uint8_t> &out)
   {
       const uint8_t *y = planes[0].data();
       const int cstride = stride / 2;
@@ -65,13 +72,20 @@ using byte_track::Vec4;
       if (planes.size() >= 3) { u = planes[1].data(); v = planes[2].data(); }
       else { u = y + static_cast<size_t>(stride) * h; v = u + static_cast<size_t>(cstride) * (h / 2); }
 
-      cv::Mat i420(h + h / 2, w, CV_8UC1);
-      for (int r = 0; r < h; ++r) std::memcpy(i420.ptr(r), y + static_cast<size_t>(r) * stride, w);
-      uint8_t *ud = i420.ptr(h);
+      out.resize(static_cast<size_t>(w) * h * 3 / 2);
+      uint8_t *yd = out.data();
+      for (int r = 0; r < h; ++r) std::memcpy(yd + static_cast<size_t>(r) * w, y + static_cast<size_t>(r) * stride, w);
+      uint8_t *ud = yd + static_cast<size_t>(w) * h;
       for (int r = 0; r < h / 2; ++r) std::memcpy(ud + static_cast<size_t>(r) * (w / 2), u + static_cast<size_t>(r) * cstride, w / 2);
       uint8_t *vd = ud + static_cast<size_t>(h / 2) * (w / 2);
       for (int r = 0; r < h / 2; ++r) std::memcpy(vd + static_cast<size_t>(r) * (w / 2), v + static_cast<size_t>(r) * cstride, w / 2);
+  }
 
+  void yuv420_to_bgr(const std::vector<libcamera::Span<uint8_t>> &planes, int w, int h, int stride,
+                     std::vector<uint8_t> &scratch, cv::Mat &bgr)
+  {
+      pack_i420(planes, w, h, stride, scratch);
+      cv::Mat i420(h + h / 2, w, CV_8UC1, scratch.data());
       cv::cvtColor(i420, bgr, cv::COLOR_YUV2BGR_I420);
   }
   }  // namespace
@@ -88,6 +102,33 @@ void add_args(argparse::ArgumentParser &parser)
       .help("Seconds between periodic camera preview uploads to S3")
       .default_value(300)
       .scan<'i', int>();
+
+      parser.add_argument("--rtsp-url")
+      .help("RTSP endpoint on the MediaMTX server to publish the video stream to")
+      .default_value(std::string("rtsp://10.0.0.126:8554/cam"));
+
+      parser.add_argument("--stream-width")
+      .help("Width of the streamed video")
+      .default_value(1280)
+      .scan<'i', int>();
+
+      parser.add_argument("--stream-height")
+      .help("Height of the streamed video")
+      .default_value(720)
+      .scan<'i', int>();
+
+      parser.add_argument("--stream-bitrate")
+      .help("H.264 bitrate of the streamed video, in bits per second")
+      .default_value(2000000)
+      .scan<'i', int>();
+
+      parser.add_argument("--stream-encoder")
+      .help("ffmpeg H.264 encoder; h264_v4l2m2m is the Pi's hardware encoder, libx264 the CPU fallback")
+      .default_value(std::string("h264_v4l2m2m"));
+
+      parser.add_argument("--no-stream")
+      .help("Disable RTSP video streaming (tracking and uploads still run)")
+      .flag();
 }
 
   static volatile bool quit = false;
@@ -124,6 +165,10 @@ void add_args(argparse::ArgumentParser &parser)
       // Small lores stream for overlay/JPEG; main stream carries full-res frames.
       opts->Set().lores_width  = 640;
       opts->Set().lores_height = 480;
+      // The main (viewfinder) stream is what gets encoded and pushed to RTSP, so
+      // it is sized to the requested stream resolution rather than the display's.
+      opts->Set().viewfinder_width  = parser.get<int>("--stream-width");
+      opts->Set().viewfinder_height = parser.get<int>("--stream-height");
 
       app.OpenCamera();
 
@@ -156,10 +201,46 @@ void add_args(argparse::ArgumentParser &parser)
           spdlog::error("[Track] Backend client unavailable, continuing without uploads: {}", err.what());
       }
 
+      // --- RTSP video streaming --------------------------------------------
+      // The main stream's frames are packed and piped to ffmpeg, which encodes
+      // them to H.264 and publishes to MediaMTX. Sized from the stream libcamera
+      // actually gave us, which may differ from what we asked for.
+      std::optional<byte_track::FfmpegStreamer> streamer;
+      libcamera::Stream *video_stream = app.GetMainStream();
+      if (parser.get<bool>("--no-stream")) {
+          spdlog::info("[Stream] RTSP streaming disabled by --no-stream");
+      } else if (!video_stream) {
+          spdlog::error("[Stream] No main stream available, continuing without video streaming");
+      } else {
+          const StreamInfo si = app.GetStreamInfo(video_stream);
+          if (si.pixel_format != libcamera::formats::YUV420) {
+              spdlog::error("[Stream] Main stream is {}, expected YUV420; continuing without video streaming",
+                            si.pixel_format.toString());
+          } else {
+              byte_track::FfmpegStreamer::Config cfg;
+              cfg.rtsp_url  = parser.get<std::string>("--rtsp-url");
+              cfg.width     = static_cast<int>(si.width)  & ~1;
+              cfg.height    = static_cast<int>(si.height) & ~1;
+              cfg.framerate = static_cast<int>(std::lround(opts->Get().framerate.value_or(30.0f)));
+              cfg.bitrate   = parser.get<int>("--stream-bitrate");
+              cfg.gop       = cfg.framerate;  // one keyframe per second, as --intra 30 did at 30fps
+              cfg.encoder   = parser.get<std::string>("--stream-encoder");
+
+              streamer.emplace(cfg);
+              if (!streamer->start()) {
+                  spdlog::error("[Stream] Could not start ffmpeg, continuing without video streaming");
+                  streamer.reset();
+              }
+          }
+      }
+
       unsigned infer_frames = 0;
       bool send_frame = false;
       int sent_frames = 0;
       auto last_preview_upload = steady_clock::now();
+      // Reused per-frame packing buffers; the callback is the only thread here.
+      std::vector<uint8_t> video_i420;
+      std::vector<uint8_t> jpeg_i420;
 
       // The PostProcessor delivers each request here AFTER the imx500 stage has
       // run, so CnnOutputTensor is present. This runs on the PostProcessor's
@@ -185,9 +266,24 @@ void add_args(argparse::ArgumentParser &parser)
                   }
               }
 
-              if (++infer_frames % 30 == 0)
-                  spdlog::debug("[Track] infer_frame {} | dets={} tracks={} | cam_fps={:.1f}",
-                                infer_frames, objs.size(), tracks.size(), req->framerate);
+              // if (++infer_frames % 30 == 0)
+              //     spdlog::debug("[Track] infer_frame {} | dets={} tracks={} | cam_fps={:.1f}",
+              //                   infer_frames, objs.size(), tracks.size(), req->framerate);
+          }
+
+          // --- H.264 stream to MediaMTX ---
+          // Done before the JPEG work so a slow upload can't delay the stream.
+          if (streamer) {
+              if (auto vit = req->buffers.find(video_stream); vit != req->buffers.end()) {
+                  BufferReadSync vr(&app, vit->second);
+                  const auto &vplanes = vr.Get();
+                  if (!vplanes.empty()) {
+                      const StreamInfo vsi = app.GetStreamInfo(video_stream);
+                      pack_i420(vplanes, streamer->config().width, streamer->config().height,
+                                vsi.stride, video_i420);
+                      streamer->write_frame(video_i420.data(), video_i420.size());
+                  }
+              }
           }
 
           // --- JPEG encode for backend upload ---
@@ -207,7 +303,7 @@ void add_args(argparse::ArgumentParser &parser)
           if (planes.empty()) return;
 
           cv::Mat bgr;
-          yuv420_to_bgr(planes, width, height, si.stride, bgr);
+          yuv420_to_bgr(planes, width, height, si.stride, jpeg_i420, bgr);
 
           std::vector<uint8_t> jpg;
           cv::imencode(".jpg", bgr, jpg, {cv::IMWRITE_JPEG_QUALITY, 80});
@@ -251,5 +347,10 @@ void add_args(argparse::ArgumentParser &parser)
       post_processor.Stop();
       app.StopCamera();
       post_processor.Teardown();
+      // After the callback can no longer fire, so no frame arrives mid-shutdown.
+      if (streamer) {
+          spdlog::info("[Stream] Stopping ffmpeg ({} frames dropped)", streamer->dropped_frames());
+          streamer->stop();
+      }
       return 0;
   }
