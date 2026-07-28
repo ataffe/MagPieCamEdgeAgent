@@ -109,9 +109,10 @@ std::optional<std::string> BackendClient::get_jwt_token() {
     }
 }
 
-std::optional<BackendClient::PresignedUpload> BackendClient::get_presigned_url(const std::string &jwt_token) {
+std::optional<BackendClient::PresignedUpload> BackendClient::get_presigned_url(const std::string &jwt_token, const std::string &upload_type) {
     cpr::Response response = cpr::Post(
         cpr::Url{backend_.base_url + backend_.presign_endpoint},
+        cpr::Parameters{{"upload_type", upload_type}},
         cpr::Header{{"Authorization", "Bearer " + jwt_token}});
 
     if (response.status_code != 200) {
@@ -152,7 +153,8 @@ bool BackendClient::put_to_storage(const PresignedUpload &target,
 }
 
 bool BackendClient::upload_image(const std::vector<uint8_t> &image,
-                                 const std::string &content_type) {
+                                 const std::string &content_type,
+                                 const std::string &upload_type) {
     if (image.empty()) {
         spdlog::error("[BackendClient] Refusing to upload empty image.");
         return false;
@@ -163,7 +165,7 @@ bool BackendClient::upload_image(const std::vector<uint8_t> &image,
         return false;
     }
 
-    const auto target = get_presigned_url(*jwt_token);
+    const auto target = get_presigned_url(*jwt_token, upload_type);
     if (!target) {
         return false;
     }

@@ -85,8 +85,7 @@ if(BUILD_CAMERA_APP)
     FetchContent_MakeAvailable(argparse)
 
     add_executable(track src/main_track.cpp
-            src/parsers/imx500_yolo_parser.cpp
-            src/server/mjpeg_server.cpp)
+            src/parsers/imx500_yolo_parser.cpp)
     target_include_directories(track PRIVATE
             include
             /usr/include/rpicam-apps)
