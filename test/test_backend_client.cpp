@@ -65,6 +65,7 @@ protected:
             {"token_endpoint", "/v1/auth/token/"},
             {"presign_endpoint", "/v1/uploads/presign"},
             {"registration_endpoint", "/v1/cameras/register/"},
+            {"update_preview_time_endpoint", "/v1/cameras/update_preview_time"},
             {"serial_number_file",
              serial_number_file.empty() ? (dir_ / "no_such_serial_file").string() : serial_number_file},
             {"claim_token_path",
@@ -84,6 +85,7 @@ constexpr char kValidBackend[] = R"({
         "token_endpoint": "/v1/auth/token/",
         "presign_endpoint": "/v1/uploads/presign",
         "registration_endpoint": "/v1/cameras/register/",
+        "update_preview_time_endpoint": "/v1/cameras/update_preview_time",
         "serial_number_file": "/sys/firmware/devicetree/base/serial-number",
         "claim_token_path": "/tmp/backend_client_test_claim_token",
         "credentials_path": "/tmp/backend_client_test_credentials.json"
@@ -100,6 +102,7 @@ TEST_F(BackendClientConfigTest, ParsesBackendConfigFields) {
     EXPECT_EQ(cfg.token_endpoint, "/v1/auth/token/");
     EXPECT_EQ(cfg.presign_endpoint, "/v1/uploads/presign");
     EXPECT_EQ(cfg.registration_endpoint, "/v1/cameras/register/");
+    EXPECT_EQ(cfg.update_preview_time_endpoint, "/v1/cameras/update_preview_time");
     EXPECT_EQ(cfg.serial_number_file, "/sys/firmware/devicetree/base/serial-number");
     EXPECT_EQ(cfg.claim_token_path, "/tmp/backend_client_test_claim_token");
     EXPECT_EQ(cfg.credentials_path, "/tmp/backend_client_test_credentials.json");
