@@ -252,6 +252,14 @@ void add_args(argparse::ArgumentParser &parser)
               }
 
               streamer.emplace(stream_config);
+              // MediaMTX is configured to require a token; reuse the same
+              // device-token exchange BackendClient uses for its own APIs
+              // rather than re-implementing it here.
+              if (backend_client) {
+                  streamer->set_jwt_provider([&backend_client]() { return backend_client->get_jwt_token(); });
+              } else {
+                  spdlog::warn("[Stream] No backend client available; publishing to MediaMTX unauthenticated");
+              }
               if (!streamer->start()) {
                   spdlog::error("[Stream] Could not start ffmpeg, continuing without video streaming");
                   streamer.reset();

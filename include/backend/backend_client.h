@@ -52,13 +52,20 @@ public:
                       const std::string &content_type = "image/jpeg",
                       const std::string &upload_type = "DETECTION");
 
+    // Exchanges the cached device_token for a short-lived JWT via the
+    // configured token endpoint. Public so callers outside upload_image() --
+    // e.g. the RTSP streamer authenticating with MediaMTX -- can reuse it
+    // instead of re-implementing the device-token exchange. Safe to call
+    // concurrently with itself and with upload_image(): it only reads state
+    // (backend_, device_token) that is fixed after construction.
+    std::optional<std::string> get_jwt_token();
+
 private:
     struct PresignedUpload {
         std::string url;
         std::string key;
     };
 
-    std::optional<std::string> get_jwt_token();
     std::optional<PresignedUpload> get_presigned_url(const std::string &jwt_token, const std::string &upload_type);
     bool update_preview_time(const std::string &jwt_token);
     bool put_to_storage(const PresignedUpload &target,
