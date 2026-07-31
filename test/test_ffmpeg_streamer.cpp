@@ -171,3 +171,85 @@ TEST(FfmpegStreamerTest, FrameBytesMatchesI420Size) {
     const FfmpegStreamer streamer(config);
     EXPECT_EQ(streamer.frame_bytes(), 1280u * 720u * 3 / 2);
 }
+
+// --- resolved_rtsp_url --------------------------------------------------------
+
+TEST(FfmpegStreamerTest, ResolvedUrlIsUnchangedWithoutAJwtProvider) {
+    FfmpegStreamer::Config config;
+    config.rtsp_url = "rtsp://10.0.0.126:8554/cam";
+    const FfmpegStreamer streamer(config);
+    EXPECT_EQ(streamer.resolved_rtsp_url(), "rtsp://10.0.0.126:8554/cam");
+}
+
+TEST(FfmpegStreamerTest, ResolvedUrlAppendsTokenFromProvider) {
+    FfmpegStreamer::Config config;
+    config.rtsp_url = "rtsp://10.0.0.126:8554/cam";
+    FfmpegStreamer streamer(config);
+    streamer.set_jwt_provider([]() -> std::optional<std::string> { return "abc123"; });
+    EXPECT_EQ(streamer.resolved_rtsp_url(), "rtsp://10.0.0.126:8554/cam?token=abc123");
+}
+
+TEST(FfmpegStreamerTest, ResolvedUrlUsesAmpersandWhenQueryStringAlreadyPresent) {
+    FfmpegStreamer::Config config;
+    config.rtsp_url = "rtsp://10.0.0.126:8554/cam?foo=bar";
+    FfmpegStreamer streamer(config);
+    streamer.set_jwt_provider([]() -> std::optional<std::string> { return "abc123"; });
+    EXPECT_EQ(streamer.resolved_rtsp_url(), "rtsp://10.0.0.126:8554/cam?foo=bar&token=abc123");
+}
+
+TEST(FfmpegStreamerTest, ResolvedUrlPercentEncodesToken) {
+    FfmpegStreamer::Config config;
+    config.rtsp_url = "rtsp://10.0.0.126:8554/cam";
+    FfmpegStreamer streamer(config);
+    streamer.set_jwt_provider([]() -> std::optional<std::string> { return "a.b+c/d=="; });
+    EXPECT_EQ(streamer.resolved_rtsp_url(), "rtsp://10.0.0.126:8554/cam?token=a.b%2Bc%2Fd%3D%3D");
+}
+
+TEST(FfmpegStreamerTest, ResolvedUrlIsUnauthenticatedWhenProviderReturnsNullopt) {
+    FfmpegStreamer::Config config;
+    config.rtsp_url = "rtsp://10.0.0.126:8554/cam";
+    FfmpegStreamer streamer(config);
+    streamer.set_jwt_provider([]() -> std::optional<std::string> { return std::nullopt; });
+    EXPECT_EQ(streamer.resolved_rtsp_url(), "rtsp://10.0.0.126:8554/cam");
+}
+
+TEST(FfmpegStreamerTest, ResolvedUrlCallsProviderEveryTime) {
+    // Each (re)spawn of ffmpeg should get a fresh token rather than a cached
+    // one, since a respawn is a new RTSP connection MediaMTX re-validates.
+    FfmpegStreamer::Config config;
+    config.rtsp_url = "rtsp://10.0.0.126:8554/cam";
+    FfmpegStreamer streamer(config);
+    int calls = 0;
+    streamer.set_jwt_provider([&calls]() -> std::optional<std::string> {
+        return "token-" + std::to_string(++calls);
+    });
+    EXPECT_EQ(streamer.resolved_rtsp_url(), "rtsp://10.0.0.126:8554/cam?token=token-1");
+    EXPECT_EQ(streamer.resolved_rtsp_url(), "rtsp://10.0.0.126:8554/cam?token=token-2");
+}
+
+TEST(FfmpegStreamerTest, ResolvedUrlAppendsPublicCameraIdPathSegment) {
+    FfmpegStreamer::Config config;
+    config.rtsp_url = "rtsp://10.0.0.126:8554";
+    FfmpegStreamer streamer(config);
+    streamer.set_public_camera_id("019fabb9-86e0-7a67-922b-5659167cc099");
+    EXPECT_EQ(streamer.resolved_rtsp_url(),
+              "rtsp://10.0.0.126:8554/019fabb9-86e0-7a67-922b-5659167cc099");
+}
+
+TEST(FfmpegStreamerTest, ResolvedUrlAppendsCameraIdThenToken) {
+    FfmpegStreamer::Config config;
+    config.rtsp_url = "rtsp://10.0.0.126:8554";
+    FfmpegStreamer streamer(config);
+    streamer.set_public_camera_id("019fabb9-86e0-7a67-922b-5659167cc099");
+    streamer.set_jwt_provider([]() -> std::optional<std::string> { return "abc123"; });
+    EXPECT_EQ(streamer.resolved_rtsp_url(),
+              "rtsp://10.0.0.126:8554/019fabb9-86e0-7a67-922b-5659167cc099?token=abc123");
+}
+
+TEST(FfmpegStreamerTest, ResolvedUrlHandlesTrailingSlashOnRtspUrl) {
+    FfmpegStreamer::Config config;
+    config.rtsp_url = "rtsp://10.0.0.126:8554/";
+    FfmpegStreamer streamer(config);
+    streamer.set_public_camera_id("cam-1");
+    EXPECT_EQ(streamer.resolved_rtsp_url(), "rtsp://10.0.0.126:8554/cam-1");
+}
