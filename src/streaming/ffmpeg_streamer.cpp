@@ -3,12 +3,17 @@
 #include "streaming/ffmpeg_streamer.h"
 
 #include <csignal>
+#include <cctype>
 #include <cerrno>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
+#include <fcntl.h>
+#include <poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -27,6 +32,12 @@ namespace {
 constexpr auto kRestartDelay = seconds(2);
 // Grace period for ffmpeg to flush and exit after its stdin is closed.
 constexpr auto kShutdownTimeout = seconds(3);
+// If ffmpeg's RTSP muxer dies (e.g. MediaMTX rejects an expired/invalid
+// token) the process can stay alive without draining stdin. A blocking
+// write() would then hang forever, and stop() would too -- it joins the
+// writer thread before closing the pipe. Bounding each write lets a stalled
+// ffmpeg be detected and treated as a broken pipe (see write_all()) instead.
+constexpr int kWriteTimeoutMs = 2000;
 // Section of the client config file holding the streaming settings.
 constexpr char kConfigSection[] = "streaming";
 
@@ -37,6 +48,47 @@ void read_field(const json &obj, const char *key, T &out)
 {
     if (const auto it = obj.find(key); it != obj.end())
         out = it->get<T>();
+}
+
+// Percent-encodes everything but RFC 3986 "unreserved" characters, so a JWT
+// (or anything else) is safe to embed as a single query parameter value.
+std::string url_encode(const std::string &value)
+{
+    std::ostringstream out;
+    for (const unsigned char c : value) {
+        if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            out << static_cast<char>(c);
+        } else {
+            out << '%' << std::hex << std::uppercase << std::setw(2) << std::setfill('0')
+                << static_cast<int>(c) << std::dec;
+        }
+    }
+    return out.str();
+}
+
+// Appends MediaMTX's documented auth query parameter to a base RTSP URL, e.g.
+// append_token("rtsp://h/cam", "abc") -> "rtsp://h/cam?token=abc", or with
+// `&` if the URL already carries a query string. Returns base_url unchanged
+// if there is no token.
+std::string append_token(const std::string &base_url, const std::optional<std::string> &token)
+{
+    if (!token)
+        return base_url;
+    std::string url = base_url;
+    url += (url.find('?') == std::string::npos) ? '?' : '&';
+    url += "token=" + url_encode(*token);
+    return url;
+}
+
+// Replaces a `token=...` query value with a placeholder so the ffmpeg command
+// line logged at debug level doesn't leak the JWT.
+std::string redact_token(const std::string &arg)
+{
+    const auto pos = arg.find("token=");
+    if (pos == std::string::npos)
+        return arg;
+    const auto amp = arg.find('&', pos);
+    return arg.substr(0, pos + 6) + "<redacted>" + (amp == std::string::npos ? "" : arg.substr(amp));
 }
 }  // namespace
 
@@ -104,6 +156,42 @@ size_t FfmpegStreamer::frame_bytes() const
     return static_cast<size_t>(config_.width) * config_.height * 3 / 2;
 }
 
+void FfmpegStreamer::set_jwt_provider(std::function<std::optional<std::string>()> provider)
+{
+    jwt_provider_ = std::move(provider);
+}
+
+void FfmpegStreamer::set_public_camera_id(std::string camera_id)
+{
+    public_camera_id_ = std::move(camera_id);
+}
+
+std::string FfmpegStreamer::rtsp_url_with_camera_id() const
+{
+    if (public_camera_id_.empty())
+        return config_.rtsp_url;
+
+    std::string url = config_.rtsp_url;
+    if (!url.empty() && url.back() != '/')
+        url += '/';
+    url += public_camera_id_;
+    return url;
+}
+
+std::string FfmpegStreamer::resolved_rtsp_url() const
+{
+    const std::string base = rtsp_url_with_camera_id();
+
+    if (!jwt_provider_)
+        return base;
+
+    const auto token = jwt_provider_();
+    if (!token)
+        spdlog::warn("[Stream] No JWT available, publishing to {} unauthenticated", base);
+
+    return append_token(base, token);
+}
+
 std::vector<std::string> FfmpegStreamer::build_args() const
 {
     std::vector<std::string> args = {
@@ -130,7 +218,9 @@ std::vector<std::string> FfmpegStreamer::build_args() const
         args.insert(args.end(), {"-preset", "ultrafast", "-tune", "zerolatency"});
     }
 
-    args.insert(args.end(), {"-f", "rtsp", "-rtsp_transport", "tcp", config_.rtsp_url});
+    // Resolved once per spawn (not cached) so a respawn -- e.g. after MediaMTX
+    // restarts -- reconnects with a fresh, unexpired token.
+    args.insert(args.end(), {"-f", "rtsp", "-rtsp_transport", "tcp", resolved_rtsp_url()});
     return args;
 }
 
@@ -170,12 +260,16 @@ bool FfmpegStreamer::spawn()
 
     ::close(fds[0]);
     pipe_fd_ = fds[1];
+    // Non-blocking so write_all() can bound how long it waits for ffmpeg to
+    // drain the pipe instead of blocking forever -- see kWriteTimeoutMs.
+    if (::fcntl(pipe_fd_, F_SETFL, O_NONBLOCK) != 0)
+        spdlog::warn("[Stream] fcntl(O_NONBLOCK) on ffmpeg pipe failed: {}", std::strerror(errno));
     child_pid_ = pid;
     spdlog::info("[Stream] ffmpeg started (pid {}): {}x{}@{} -> {}",
-                 pid, config_.width, config_.height, config_.framerate, config_.rtsp_url);
+                 pid, config_.width, config_.height, config_.framerate, rtsp_url_with_camera_id());
     std::string cmdline;
     for (const auto &arg : args)
-        cmdline += arg + " ";
+        cmdline += redact_token(arg) + " ";
     spdlog::debug("[Stream] {}", cmdline);
     return true;
 }
@@ -229,6 +323,25 @@ bool FfmpegStreamer::write_all(const uint8_t *data, size_t len)
         if (n < 0) {
             if (errno == EINTR)
                 continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Pipe is full and ffmpeg isn't draining it -- normally brief
+                // (it's a live encoder), but if ffmpeg's RTSP muxer died (e.g.
+                // an auth failure) the process can sit there not reading
+                // stdin at all. Wait up to kWriteTimeoutMs for it to become
+                // writable again before giving up and treating this as a
+                // broken pipe, same as any other write failure.
+                pollfd pfd{pipe_fd_, POLLOUT, 0};
+                const int r = ::poll(&pfd, 1, kWriteTimeoutMs);
+                if (r > 0 && (pfd.revents & POLLOUT))
+                    continue;
+                if (r < 0 && errno == EINTR)
+                    continue;
+                if (r == 0)
+                    spdlog::warn("[Stream] ffmpeg stopped draining stdin, treating pipe as broken");
+                else
+                    spdlog::warn("[Stream] poll() on ffmpeg pipe failed: {}", std::strerror(errno));
+                return false;
+            }
             spdlog::warn("[Stream] write to ffmpeg failed: {}", std::strerror(errno));
             return false;
         }

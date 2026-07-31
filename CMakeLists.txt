@@ -86,7 +86,8 @@ if(BUILD_CAMERA_APP)
 
     add_executable(scout_cam_client src/main_track.cpp
             src/parsers/imx500_yolo_parser.cpp
-            src/streaming/ffmpeg_streamer.cpp)
+            src/streaming/ffmpeg_streamer.cpp
+            src/streaming/stream_command_poller.cpp)
     target_include_directories(scout_cam_client PRIVATE
             include
             /usr/include/rpicam-apps)
@@ -135,11 +136,13 @@ if(BUILD_TESTING)
             test/test_imx500_yolo_parser.cpp
             test/test_backend_client.cpp
             test/test_ffmpeg_streamer.cpp
-            # The parser and the streamer live in the camera client exe, not the
-            # bytetrack lib, but neither depends on libcamera, so compile them
-            # straight in.
+            test/test_stream_command_poller.cpp
+            # The parser and the streaming code live in the camera client exe,
+            # not the bytetrack lib, but none of it depends on libcamera, so
+            # compile it straight in.
             src/parsers/imx500_yolo_parser.cpp
-            src/streaming/ffmpeg_streamer.cpp)
+            src/streaming/ffmpeg_streamer.cpp
+            src/streaming/stream_command_poller.cpp)
     target_link_libraries(bytetrack_tests PRIVATE bytetrack backend_client GTest::gtest_main)
 
     include(GoogleTest)

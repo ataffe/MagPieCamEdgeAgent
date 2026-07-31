@@ -100,7 +100,6 @@ std::optional<std::string> BackendClient::get_jwt_token() {
         spdlog::error("Unable to retrieve JWT. Status Code: {} | Response {}", response.status_code ,response.text);
         return std::nullopt;
     }
-    spdlog::debug("[BackendClient] Successfully retrieved JWT with status code: {}", response.status_code);
 
     try {
         return json::parse(response.text).at("access").get<std::string>();
