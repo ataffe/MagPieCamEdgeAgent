@@ -226,3 +226,30 @@ TEST(FfmpegStreamerTest, ResolvedUrlCallsProviderEveryTime) {
     EXPECT_EQ(streamer.resolved_rtsp_url(), "rtsp://10.0.0.126:8554/cam?token=token-1");
     EXPECT_EQ(streamer.resolved_rtsp_url(), "rtsp://10.0.0.126:8554/cam?token=token-2");
 }
+
+TEST(FfmpegStreamerTest, ResolvedUrlAppendsPublicCameraIdPathSegment) {
+    FfmpegStreamer::Config config;
+    config.rtsp_url = "rtsp://10.0.0.126:8554";
+    FfmpegStreamer streamer(config);
+    streamer.set_public_camera_id("019fabb9-86e0-7a67-922b-5659167cc099");
+    EXPECT_EQ(streamer.resolved_rtsp_url(),
+              "rtsp://10.0.0.126:8554/019fabb9-86e0-7a67-922b-5659167cc099");
+}
+
+TEST(FfmpegStreamerTest, ResolvedUrlAppendsCameraIdThenToken) {
+    FfmpegStreamer::Config config;
+    config.rtsp_url = "rtsp://10.0.0.126:8554";
+    FfmpegStreamer streamer(config);
+    streamer.set_public_camera_id("019fabb9-86e0-7a67-922b-5659167cc099");
+    streamer.set_jwt_provider([]() -> std::optional<std::string> { return "abc123"; });
+    EXPECT_EQ(streamer.resolved_rtsp_url(),
+              "rtsp://10.0.0.126:8554/019fabb9-86e0-7a67-922b-5659167cc099?token=abc123");
+}
+
+TEST(FfmpegStreamerTest, ResolvedUrlHandlesTrailingSlashOnRtspUrl) {
+    FfmpegStreamer::Config config;
+    config.rtsp_url = "rtsp://10.0.0.126:8554/";
+    FfmpegStreamer streamer(config);
+    streamer.set_public_camera_id("cam-1");
+    EXPECT_EQ(streamer.resolved_rtsp_url(), "rtsp://10.0.0.126:8554/cam-1");
+}

@@ -43,6 +43,7 @@
 #include "parsers/imx500_yolo_parser.h"
 #include "backend/backend_client.h"
 #include "streaming/ffmpeg_streamer.h"
+#include "streaming/stream_command_poller.h"
 
 using namespace std::chrono;
 using byte_track::BYTETracker;
@@ -227,7 +228,10 @@ void add_args(argparse::ArgumentParser &parser)
 
       // --- RTSP video streaming --------------------------------------------
       // The main stream's frames are packed and piped to ffmpeg, which encodes
-      // them to H.264 and publishes to MediaMTX.
+      // them to H.264 and publishes to MediaMTX. Streaming is on demand: the
+      // streamer is built here but stays idle until the backend asks for it
+      // (see the stream command poller below), so an unwatched camera spends
+      // nothing on encoding or uplink.
       std::optional<byte_track::FfmpegStreamer> streamer;
       libcamera::Stream *video_stream = app.GetMainStream();
       if (parser.get<bool>("--no-stream")) {
@@ -252,22 +256,51 @@ void add_args(argparse::ArgumentParser &parser)
               }
 
               streamer.emplace(stream_config);
-              // MediaMTX is configured to require a token; reuse the same
-              // device-token exchange BackendClient uses for its own APIs
-              // rather than re-implementing it here.
+              // MediaMTX now serves multiple cameras behind one host:port, each
+              // at a path keyed by its public_camera_id, and requires a token;
+              // reuse BackendClient's cached camera id and device-token
+              // exchange rather than re-implementing either here.
               if (backend_client) {
+                  streamer->set_public_camera_id(backend_client->get_public_camera_id());
                   streamer->set_jwt_provider([&backend_client]() { return backend_client->get_jwt_token(); });
               } else {
                   spdlog::warn("[Stream] No backend client available; publishing to MediaMTX unauthenticated");
               }
-              if (!streamer->start()) {
-                  spdlog::error("[Stream] Could not start ffmpeg, continuing without video streaming");
-                  streamer.reset();
-              }
           }
       }
 
-      unsigned infer_frames = 0;
+      // --- Stream command long poll ----------------------------------------
+      // Asks the backend whether anyone wants to watch, and starts/stops the
+      // streamer to match. Without a backend client there is no JWT to poll
+      // with, so streaming would never be requested -- say so rather than
+      // leaving a silently idle streamer.
+      std::optional<byte_track::StreamCommandPoller> poller;
+      if (streamer && !backend_client) {
+          spdlog::error("[StreamCmd] No backend client; stream will stay off (nothing can request it)");
+      } else if (streamer) {
+          try {
+              poller.emplace(byte_track::StreamCommandPoller::Config::from_file(kBackendConfigPath));
+          } catch (const std::exception &err) {
+              spdlog::error("[StreamCmd] Stream commands unavailable, stream will stay off: {}", err.what());
+          }
+      }
+      if (poller) {
+          poller->set_jwt_provider([&backend_client]() { return backend_client->get_jwt_token(); });
+          poller->set_on_start([&streamer]() {
+              if (streamer->is_running())
+                  return;  // already streaming; the backend re-sends "start" as a nudge
+              if (!streamer->start())
+                  spdlog::error("[Stream] Could not start ffmpeg for the requested stream");
+          });
+          poller->set_on_stop([&streamer]() {
+              if (!streamer->is_running())
+                  return;
+              spdlog::info("[Stream] Stopping ffmpeg ({} frames dropped)", streamer->dropped_frames());
+              streamer->stop();
+          });
+          poller->start();
+      }
+
       bool send_frame = false;
       int sent_frames = 0;
       auto last_preview_upload = steady_clock::now();
@@ -306,7 +339,9 @@ void add_args(argparse::ArgumentParser &parser)
 
           // --- H.264 stream to MediaMTX ---
           // Done before the JPEG work so a slow upload can't delay the stream.
-          if (streamer) {
+          // Skipped entirely while no one is watching: write_frame() would drop
+          // the frame anyway, and packing it first is the expensive half.
+          if (streamer && streamer->is_running()) {
               if (auto vit = req->buffers.find(video_stream); vit != req->buffers.end()) {
                   BufferReadSync vr(&app, vit->second);
                   const auto &vplanes = vr.Get();
@@ -380,8 +415,12 @@ void add_args(argparse::ArgumentParser &parser)
       post_processor.Stop();
       app.StopCamera();
       post_processor.Teardown();
+      // Poller first: it is the only thing that starts the streamer, so once it
+      // has joined nothing can bring ffmpeg back up underneath the stop below.
+      if (poller)
+          poller->stop();
       // After the callback can no longer fire, so no frame arrives mid-shutdown.
-      if (streamer) {
+      if (streamer && streamer->is_running()) {
           spdlog::info("[Stream] Stopping ffmpeg ({} frames dropped)", streamer->dropped_frames());
           streamer->stop();
       }

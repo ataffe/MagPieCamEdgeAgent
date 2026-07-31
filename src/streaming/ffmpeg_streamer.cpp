@@ -161,16 +161,35 @@ void FfmpegStreamer::set_jwt_provider(std::function<std::optional<std::string>()
     jwt_provider_ = std::move(provider);
 }
 
+void FfmpegStreamer::set_public_camera_id(std::string camera_id)
+{
+    public_camera_id_ = std::move(camera_id);
+}
+
+std::string FfmpegStreamer::rtsp_url_with_camera_id() const
+{
+    if (public_camera_id_.empty())
+        return config_.rtsp_url;
+
+    std::string url = config_.rtsp_url;
+    if (!url.empty() && url.back() != '/')
+        url += '/';
+    url += public_camera_id_;
+    return url;
+}
+
 std::string FfmpegStreamer::resolved_rtsp_url() const
 {
+    const std::string base = rtsp_url_with_camera_id();
+
     if (!jwt_provider_)
-        return config_.rtsp_url;
+        return base;
 
     const auto token = jwt_provider_();
     if (!token)
-        spdlog::warn("[Stream] No JWT available, publishing to {} unauthenticated", config_.rtsp_url);
+        spdlog::warn("[Stream] No JWT available, publishing to {} unauthenticated", base);
 
-    return append_token(config_.rtsp_url, token);
+    return append_token(base, token);
 }
 
 std::vector<std::string> FfmpegStreamer::build_args() const
@@ -247,7 +266,7 @@ bool FfmpegStreamer::spawn()
         spdlog::warn("[Stream] fcntl(O_NONBLOCK) on ffmpeg pipe failed: {}", std::strerror(errno));
     child_pid_ = pid;
     spdlog::info("[Stream] ffmpeg started (pid {}): {}x{}@{} -> {}",
-                 pid, config_.width, config_.height, config_.framerate, config_.rtsp_url);
+                 pid, config_.width, config_.height, config_.framerate, rtsp_url_with_camera_id());
     std::string cmdline;
     for (const auto &arg : args)
         cmdline += redact_token(arg) + " ";

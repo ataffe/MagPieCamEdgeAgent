@@ -10,7 +10,8 @@
         "credentials_path": "/home/alex/ScoutCamCameraClient/credentials/credentials.json"
     },
     "streaming": {
-        "rtsp_url": "rtsp://10.0.0.126:8554/cam",
+        "rtsp_url": "rtsp://10.0.0.126:8554",
+        "stream_command_endpoint": "/v1/cameras/streaming/command",
         "width": 1280,
         "height": 720,
         "framerate": 30,
