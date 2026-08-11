@@ -67,6 +67,11 @@ std::optional<std::string> read_trimmed_file(const std::string &path) {
 
 BackendClient::BackendClient(const std::string &config_path) {
     backend_ = load_backend_config(config_path);
+    if (!backend_.ca_cert_path.empty() && !fs::exists(backend_.ca_cert_path)) {
+        // Not fatal here, but every presigned upload will fail on it, so say so
+        // once at startup rather than only via curl's error on each upload.
+        spdlog::warn("[BackendClient] Configured ca_cert_path does not exist: {}", backend_.ca_cert_path);
+    }
     load_credentials();
 }
 
@@ -83,6 +88,8 @@ BackendClient::BackendConfig BackendClient::load_backend_config(const std::strin
             svc.at("serial_number_file").get<std::string>(),
             svc.at("claim_token_path").get<std::string>(),
             svc.at("credentials_path").get<std::string>(),
+            // Optional: absent means "fall back to the system CA store".
+            svc.value("ca_cert_path", std::string{}),
         };
     } catch (const json::exception &e) {
         throw std::runtime_error("[BackendClient] Invalid backend config " + path + ": " + e.what());
@@ -151,10 +158,19 @@ bool BackendClient::update_preview_time(const std::string &jwt_token) {
 bool BackendClient::put_to_storage(const PresignedUpload &target,
                                    const std::vector<uint8_t> &image,
                                    const std::string &content_type) {
+    // Verify the storage host against the configured CA bundle. Needed because
+    // storage is fronted by a certificate the system CA store doesn't trust;
+    // an empty ca_cert_path leaves cpr on the system store instead.
+    cpr::SslOptions ssl_options;
+    if (!backend_.ca_cert_path.empty()) {
+        ssl_options = cpr::Ssl(cpr::ssl::CaInfo{fs::path(backend_.ca_cert_path)});
+    }
+
     cpr::Response response = cpr::Put(
         cpr::Url{target.url},
         cpr::Header{{"Content-Type", content_type}},
-        cpr::Body{reinterpret_cast<const char *>(image.data()), image.size()});
+        cpr::Body{reinterpret_cast<const char *>(image.data()), image.size()},
+        ssl_options);
 
     // S3 returns 200 OK for a successful presigned PUT.
     if (response.status_code != 200) {

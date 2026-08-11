@@ -16,7 +16,8 @@
 //      and a claim token) if none are cached yet.
 //   2. Exchange the device_token for a JWT.
 //   3. Ask the webservice for a presigned upload URL.
-//   4. PUT the image bytes directly to that URL.
+//   4. PUT the image bytes directly to that URL, verifying the storage host's
+//      certificate against backend.ca_cert_path when one is configured.
 //
 // Backend endpoints are read from a (committed) JSON file; device credentials
 // are cached in a separate (gitignored) file at backend.credentials_path so
@@ -35,6 +36,11 @@ public:
         std::string serial_number_file;
         std::string claim_token_path;
         std::string credentials_path;
+        // PEM bundle used to verify the storage host's TLS certificate on
+        // presigned uploads. Optional: when empty, the system CA store is used.
+        // Only the presigned PUT uses it -- the webservice calls still go over
+        // plain HTTP.
+        std::string ca_cert_path;
     };
 
     explicit BackendClient(const std::string &config_path);
