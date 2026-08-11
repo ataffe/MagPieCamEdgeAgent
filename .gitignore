@@ -75,3 +75,4 @@ config/backend/credentials.json
 
 .DS_Store
 credentials
+certs

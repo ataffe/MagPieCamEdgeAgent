@@ -302,7 +302,7 @@ void add_args(argparse::ArgumentParser &parser)
       }
 
       bool send_frame = false;
-      int sent_frames = 0;
+      // int sent_frames = 0;
       auto last_preview_upload = steady_clock::now();
       // Reused per-frame packing buffers; the callback is the only thread here.
       std::vector<uint8_t> video_i420;
@@ -375,7 +375,7 @@ void add_args(argparse::ArgumentParser &parser)
 
           std::vector<uint8_t> jpg;
           cv::imencode(".jpg", bgr, jpg, {cv::IMWRITE_JPEG_QUALITY, 80});
-          if (backend_client && send_frame && sent_frames++ < 3)
+          if (backend_client && send_frame)
           {
               if (backend_client->upload_image(jpg)) {
                   spdlog::info("[Track] Successfully uploaded image to storage.");
@@ -387,7 +387,7 @@ void add_args(argparse::ArgumentParser &parser)
           if (backend_client && now - last_preview_upload >= preview_interval)
           {
               if (backend_client->upload_image(jpg, "image/jpeg", "CAMERA_PREVIEW")) {
-                  spdlog::info("[Track] Successfully uploaded camera preview image to storage.");
+                  spdlog::debug("[Track] Successfully uploaded camera preview image to storage.");
               }
               last_preview_upload = now;
           }

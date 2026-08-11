@@ -88,7 +88,8 @@ constexpr char kValidBackend[] = R"({
         "update_preview_time_endpoint": "/v1/cameras/update_preview_time",
         "serial_number_file": "/sys/firmware/devicetree/base/serial-number",
         "claim_token_path": "/tmp/backend_client_test_claim_token",
-        "credentials_path": "/tmp/backend_client_test_credentials.json"
+        "credentials_path": "/tmp/backend_client_test_credentials.json",
+        "ca_cert_path": "/tmp/backend_client_test_cert.pem"
     }
 })";
 
@@ -106,6 +107,13 @@ TEST_F(BackendClientConfigTest, ParsesBackendConfigFields) {
     EXPECT_EQ(cfg.serial_number_file, "/sys/firmware/devicetree/base/serial-number");
     EXPECT_EQ(cfg.claim_token_path, "/tmp/backend_client_test_claim_token");
     EXPECT_EQ(cfg.credentials_path, "/tmp/backend_client_test_credentials.json");
+    EXPECT_EQ(cfg.ca_cert_path, "/tmp/backend_client_test_cert.pem");
+}
+
+// ca_cert_path is optional: without it uploads fall back to the system CA store.
+TEST_F(BackendClientConfigTest, BackendConfigWithoutCaCertPathDefaultsToEmpty) {
+    const auto cfg = BackendClient::load_backend_config(backend_config_path());
+    EXPECT_EQ(cfg.ca_cert_path, "");
 }
 
 TEST_F(BackendClientConfigTest, BackendConfigMissingFileThrows) {
