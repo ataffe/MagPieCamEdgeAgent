@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -43,7 +44,9 @@
 #include "parsers/imx500_yolo_parser.h"
 #include "backend/backend_client.h"
 #include "streaming/ffmpeg_streamer.h"
+#include "streaming/h264_tee.h"
 #include "streaming/stream_command_poller.h"
+#include "streaming/video_clip_recorder.h"
 
 using namespace std::chrono;
 using byte_track::BYTETracker;
@@ -101,7 +104,7 @@ void add_args(argparse::ArgumentParser &parser)
 
       parser.add_argument("--preview-interval-seconds")
       .help("Seconds between periodic camera preview uploads to S3")
-      .default_value(300)
+      .default_value(600)
       .scan<'i', int>();
 
       // The streaming flags below have no defaults on purpose: unless one is
@@ -123,15 +126,31 @@ void add_args(argparse::ArgumentParser &parser)
       .scan<'i', int>();
 
       parser.add_argument("--stream-bitrate")
-      .help("Override the configured H.264 bitrate of the streamed video, in bits per second")
+      .help("Override the configured H.264 bitrate, in bits per second. Shared by the RTSP "
+            "stream and the event clips, which come off the same encoder")
       .scan<'i', int>();
 
-      parser.add_argument("--stream-encoder")
-      .help("Override the configured ffmpeg H.264 encoder; h264_v4l2m2m is the Pi's hardware "
-            "encoder, libx264 the CPU fallback");
-
       parser.add_argument("--no-stream")
-      .help("Disable RTSP video streaming (tracking and uploads still run)")
+      .help("Disable RTSP video streaming (tracking, uploads and clips still run)")
+      .flag();
+
+      // Like the streaming flags, these have no defaults: the "video_clips"
+      // section of the config file wins unless one is passed explicitly.
+      parser.add_argument("--clip-pre-seconds")
+      .help("Override how many seconds of footage before a detection go into its clip")
+      .scan<'i', int>();
+
+      parser.add_argument("--clip-post-seconds")
+      .help("Override how many seconds of footage after a detection go into its clip")
+      .scan<'i', int>();
+
+      parser.add_argument("--clip-cooldown-seconds")
+      .help("Override the minimum spacing between uploaded clips; detections inside the "
+            "cooldown are already covered by the previous clip")
+      .scan<'i', int>();
+
+      parser.add_argument("--no-video-clips")
+      .help("Disable event video clips (tracking, uploads and streaming still run)")
       .flag();
 }
 
@@ -183,7 +202,24 @@ void add_args(argparse::ArgumentParser &parser)
       if (parser.is_used("--stream-height"))    stream_config.height    = parser.get<int>("--stream-height");
       if (parser.is_used("--stream-framerate")) stream_config.framerate = parser.get<int>("--stream-framerate");
       if (parser.is_used("--stream-bitrate"))   stream_config.bitrate   = parser.get<int>("--stream-bitrate");
-      if (parser.is_used("--stream-encoder"))   stream_config.encoder   = parser.get<std::string>("--stream-encoder");
+
+      // --- Video clip configuration ----------------------------------------
+      // Same three layers as above. Bad config is not fatal either: without a
+      // clip recorder the client still tracks, streams and uploads stills.
+      std::optional<byte_track::VideoClipRecorder::Config> clip_config;
+      try {
+          clip_config = byte_track::VideoClipRecorder::Config::from_file(kBackendConfigPath);
+      } catch (const std::exception &err) {
+          spdlog::error("[Clip] Video clips unavailable: {}", err.what());
+      }
+      if (clip_config) {
+          if (parser.is_used("--clip-pre-seconds"))
+              clip_config->pre_event_length_seconds = parser.get<int>("--clip-pre-seconds");
+          if (parser.is_used("--clip-post-seconds"))
+              clip_config->post_event_length_seconds = parser.get<int>("--clip-post-seconds");
+          if (parser.is_used("--clip-cooldown-seconds"))
+              clip_config->send_video_clip_cooldown = parser.get<int>("--clip-cooldown-seconds");
+      }
 
       // Small lores stream for overlay/JPEG; main stream carries full-res frames.
       opts->Set().lores_width  = 640;
@@ -226,22 +262,21 @@ void add_args(argparse::ArgumentParser &parser)
           spdlog::error("[Track] Backend client unavailable, continuing without uploads: {}", err.what());
       }
 
-      // --- RTSP video streaming --------------------------------------------
-      // The main stream's frames are packed and piped to ffmpeg, which encodes
-      // them to H.264 and publishes to MediaMTX. Streaming is on demand: the
-      // streamer is built here but stays idle until the backend asks for it
-      // (see the stream command poller below), so an unwatched camera spends
-      // nothing on encoding or uplink.
-      std::optional<byte_track::FfmpegStreamer> streamer;
+      // --- The video pipeline ------------------------------------------------
+      // The main stream is encoded to H.264 once, by H264Tee, and the encoded
+      // frames are handed to two consumers: the RTSP streamer and the event
+      // clip recorder. The Pi has a single hardware encoder, so encoding once
+      // and sharing the result is both cheaper than a session per consumer and
+      // the only way the clip recorder can have a pre-event buffer at all --
+      // the past cannot be encoded after the fact.
       libcamera::Stream *video_stream = app.GetMainStream();
-      if (parser.get<bool>("--no-stream")) {
-          spdlog::info("[Stream] RTSP streaming disabled by --no-stream");
-      } else if (!video_stream) {
-          spdlog::error("[Stream] No main stream available, continuing without video streaming");
+      bool video_stream_usable = false;
+      if (!video_stream) {
+          spdlog::error("[Encode] No main stream available; no streaming and no video clips");
       } else {
           const StreamInfo si = app.GetStreamInfo(video_stream);
           if (si.pixel_format != libcamera::formats::YUV420) {
-              spdlog::error("[Stream] Main stream is {}, expected YUV420; continuing without video streaming",
+              spdlog::error("[Encode] Main stream is {}, expected YUV420; no streaming and no video clips",
                             si.pixel_format.toString());
           } else {
               // libcamera may not have granted exactly the size we asked for, so
@@ -249,22 +284,97 @@ void add_args(argparse::ArgumentParser &parser)
               const int actual_width  = static_cast<int>(si.width)  & ~1;
               const int actual_height = static_cast<int>(si.height) & ~1;
               if (actual_width != stream_config.width || actual_height != stream_config.height) {
-                  spdlog::warn("[Stream] Camera gave {}x{}, not the configured {}x{}; streaming at the former",
+                  spdlog::warn("[Encode] Camera gave {}x{}, not the configured {}x{}; encoding at the former",
                                actual_width, actual_height, stream_config.width, stream_config.height);
                   stream_config.width  = actual_width;
                   stream_config.height = actual_height;
               }
+              video_stream_usable = true;
+          }
+      }
 
-              streamer.emplace(stream_config);
-              // MediaMTX now serves multiple cameras behind one host:port, each
-              // at a path keyed by its public_camera_id, and requires a token;
-              // reuse BackendClient's cached camera id and device-token
-              // exchange rather than re-implementing either here.
-              if (backend_client) {
-                  streamer->set_public_camera_id(backend_client->get_public_camera_id());
-                  streamer->set_jwt_provider([&backend_client]() { return backend_client->get_jwt_token(); });
-              } else {
-                  spdlog::warn("[Stream] No backend client available; publishing to MediaMTX unauthenticated");
+      // --- RTSP video streaming --------------------------------------------
+      // Streaming is on demand: the streamer is built here but stays idle until
+      // the backend asks for it (see the stream command poller below), so an
+      // unwatched camera spends nothing on the uplink. The encoder keeps
+      // running either way -- the clip recorder needs it.
+      std::optional<byte_track::FfmpegStreamer> streamer;
+      if (parser.get<bool>("--no-stream")) {
+          spdlog::info("[Stream] RTSP streaming disabled by --no-stream");
+      } else if (video_stream_usable) {
+          streamer.emplace(stream_config);
+          // MediaMTX now serves multiple cameras behind one host:port, each
+          // at a path keyed by its public_camera_id, and requires a token;
+          // reuse BackendClient's cached camera id and device-token
+          // exchange rather than re-implementing either here.
+          if (backend_client) {
+              streamer->set_public_camera_id(backend_client->get_public_camera_id());
+              streamer->set_jwt_provider([&backend_client]() { return backend_client->get_jwt_token(); });
+          } else {
+              spdlog::warn("[Stream] No backend client available; publishing to MediaMTX unauthenticated");
+          }
+      }
+
+      // --- Event video clips -------------------------------------------------
+      // Keeps a rolling buffer of encoded frames so a detection can be uploaded
+      // with the seconds leading up to it, not just the ones after.
+      std::optional<byte_track::VideoClipRecorder> clip_recorder;
+      if (parser.get<bool>("--no-video-clips")) {
+          spdlog::info("[Clip] Video clips disabled by --no-video-clips");
+      } else if (video_stream_usable && clip_config) {
+          if (!backend_client) {
+              spdlog::error("[Clip] No backend client; video clips disabled (nowhere to upload them)");
+          } else {
+              // The camera's real frame rate is what gives the muxed MP4 its
+              // timebase, so take it from the resolved stream settings.
+              clip_config->framerate = stream_config.framerate;
+              clip_recorder.emplace(*clip_config);
+              clip_recorder->set_uploader(
+                  [&backend_client, content_type = clip_config->content_type,
+                   upload_type = clip_config->upload_type](const std::vector<uint8_t> &clip,
+                                                           const std::string &detection_key) {
+                      return backend_client
+                          ->upload_object(clip, content_type, upload_type, detection_key)
+                          .has_value();
+                  });
+              clip_recorder->start();
+          }
+      }
+
+      // --- Shared H.264 encoder ----------------------------------------------
+      // Built last, once it is known which consumers actually exist. If the
+      // encoder can't be opened neither consumer can work, so both are torn
+      // back down rather than left waiting for frames that will never arrive.
+      std::unique_ptr<byte_track::H264Tee> tee;
+      if (streamer || clip_recorder) {
+          byte_track::H264Tee::Config encoder_config;
+          encoder_config.bitrate   = stream_config.bitrate;
+          encoder_config.gop       = stream_config.gop.value_or(stream_config.framerate);
+          encoder_config.framerate = static_cast<float>(stream_config.framerate);
+          try {
+              tee = std::make_unique<byte_track::H264Tee>(&app, video_stream, encoder_config);
+          } catch (const std::exception &err) {
+              spdlog::error("[Encode] H.264 encoder unavailable, no streaming and no video clips: {}",
+                            err.what());
+          }
+
+          if (tee) {
+              if (streamer) {
+                  tee->add_sink([&streamer](const uint8_t *data, size_t len, int64_t, bool keyframe) {
+                      streamer->write_access_unit(data, len, keyframe);
+                  });
+              }
+              if (clip_recorder) {
+                  tee->add_sink([&clip_recorder](const uint8_t *data, size_t len, int64_t timestamp_us,
+                                                 bool keyframe) {
+                      clip_recorder->on_encoded_frame(data, len, timestamp_us, keyframe);
+                  });
+              }
+          } else {
+              streamer.reset();
+              if (clip_recorder) {
+                  clip_recorder->stop();
+                  clip_recorder.reset();
               }
           }
       }
@@ -301,11 +411,32 @@ void add_args(argparse::ArgumentParser &parser)
           poller->start();
       }
 
+      // Arms a clip covering the seconds either side of the detection whose
+      // image was just uploaded, keyed to that image's storage key.
+      const auto arm_clip_for_detection = [&clip_recorder](const std::string &detection_key) {
+          // Returns false when the event is already covered
+          // which is what keeps overlapping detections from producing near-duplicate uploads.
+          if (clip_recorder && clip_recorder->on_event(detection_key))
+              spdlog::info("[Clip] Detection {} armed a video clip", detection_key);
+      };
+
+      // Detections ride the clip cooldown: once one has armed a clip, the next
+      // few minutes of detections are the same animal on the same visit, and
+      // the clip already covers them -- so they cost neither a clip nor a
+      // still. Asked before the upload rather than after, since the upload is
+      // the expense the cooldown exists to avoid. Without a clip recorder
+      // there is no cooldown, and detection images go out as they always did.
+      uint64_t detections_suppressed = 0;
+      const auto detection_in_cooldown = [&clip_recorder]() {
+          return clip_recorder && clip_recorder->in_cooldown();
+      };
+
       bool send_frame = false;
-      // int sent_frames = 0;
-      auto last_preview_upload = steady_clock::now();
-      // Reused per-frame packing buffers; the callback is the only thread here.
-      std::vector<uint8_t> video_i420;
+      // Backdated so the first preview goes out seconds after startup instead of
+      // a full interval which lets the sensor's auto-exposure and white balance settle
+      constexpr auto kStartupPreviewDelay = seconds(2);
+      auto last_preview_upload = steady_clock::now() - preview_interval + kStartupPreviewDelay;
+      // Reused per-frame packing buffer; the callback is the only thread here.
       std::vector<uint8_t> jpeg_i420;
 
       // The PostProcessor delivers each request here AFTER the imx500 stage has
@@ -331,28 +462,12 @@ void add_args(argparse::ArgumentParser &parser)
                       t->increment_send_count();
                   }
               }
-
-              // if (++infer_frames % 30 == 0)
-              //     spdlog::debug("[Track] infer_frame {} | dets={} tracks={} | cam_fps={:.1f}",
-              //                   infer_frames, objs.size(), tracks.size(), req->framerate);
           }
 
-          // --- H.264 stream to MediaMTX ---
+          // --- H.264 encode ---
           // Done before the JPEG work so a slow upload can't delay the stream.
-          // Skipped entirely while no one is watching: write_frame() would drop
-          // the frame anyway, and packing it first is the expensive half.
-          if (streamer && streamer->is_running()) {
-              if (auto vit = req->buffers.find(video_stream); vit != req->buffers.end()) {
-                  BufferReadSync vr(&app, vit->second);
-                  const auto &vplanes = vr.Get();
-                  if (!vplanes.empty()) {
-                      const StreamInfo vsi = app.GetStreamInfo(video_stream);
-                      pack_i420(vplanes, streamer->config().width, streamer->config().height,
-                                vsi.stride, video_i420);
-                      streamer->write_frame(video_i420.data(), video_i420.size());
-                  }
-              }
-          }
+          if (tee)
+              tee->encode(req);
 
           // --- JPEG encode for backend upload ---
           libcamera::Stream *stream = app.LoresStream();
@@ -377,8 +492,16 @@ void add_args(argparse::ArgumentParser &parser)
           cv::imencode(".jpg", bgr, jpg, {cv::IMWRITE_JPEG_QUALITY, 80});
           if (backend_client && send_frame)
           {
-              if (backend_client->upload_image(jpg)) {
-                  spdlog::info("[Track] Successfully uploaded image to storage.");
+              if (detection_in_cooldown()) {
+                  ++detections_suppressed;
+                  spdlog::debug("[Track] Detection suppressed: still inside the {}s clip cooldown",
+                                clip_recorder->config().send_video_clip_cooldown);
+              } else {
+                  const auto object_key = backend_client->upload_object(jpg);
+                  if (object_key) {
+                      spdlog::info("[Track] Successfully uploaded image to storage.");
+                      arm_clip_for_detection(*object_key);
+                  }
               }
               send_frame = false;
           }
@@ -386,7 +509,7 @@ void add_args(argparse::ArgumentParser &parser)
           const auto now = steady_clock::now();
           if (backend_client && now - last_preview_upload >= preview_interval)
           {
-              if (backend_client->upload_image(jpg, "image/jpeg", "CAMERA_PREVIEW")) {
+              if (backend_client->upload_object(jpg, "image/jpeg", "CAMERA_PREVIEW")) {
                   spdlog::debug("[Track] Successfully uploaded camera preview image to storage.");
               }
               last_preview_upload = now;
@@ -413,6 +536,10 @@ void add_args(argparse::ArgumentParser &parser)
       }
 
       post_processor.Stop();
+      // Before StopCamera, and before the sinks below go away: destroying the
+      // tee joins the encoder's threads, so no sink can be called afterwards,
+      // and releases the camera buffers it was still holding.
+      tee.reset();
       app.StopCamera();
       post_processor.Teardown();
       // Poller first: it is the only thing that starts the streamer, so once it
@@ -421,8 +548,17 @@ void add_args(argparse::ArgumentParser &parser)
           poller->stop();
       // After the callback can no longer fire, so no frame arrives mid-shutdown.
       if (streamer && streamer->is_running()) {
-          spdlog::info("[Stream] Stopping ffmpeg ({} frames dropped)", streamer->dropped_frames());
+          spdlog::info("[Stream] Stopping ffmpeg ({} access units dropped)", streamer->dropped_frames());
           streamer->stop();
+      }
+      if (clip_recorder) {
+          // Detections held off by the cooldown are counted here rather than by
+          // the recorder: they never reach it, which is the point.
+          spdlog::info("[Clip] Stopping clip recorder ({} uploaded, {} failed, "
+                       "{} detections suppressed by the cooldown)",
+                       clip_recorder->clips_uploaded(), clip_recorder->clips_failed(),
+                       detections_suppressed + clip_recorder->events_suppressed());
+          clip_recorder->stop();
       }
       return 0;
   }
