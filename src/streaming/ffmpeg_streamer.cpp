@@ -38,6 +38,11 @@ constexpr auto kShutdownTimeout = seconds(3);
 // writer thread before closing the pipe. Bounding each write lets a stalled
 // ffmpeg be detected and treated as a broken pipe (see write_all()) instead.
 constexpr int kWriteTimeoutMs = 2000;
+// How much encoded video may sit waiting for ffmpeg before the queue is
+// declared hopeless and dropped. At the configured 2 Mbit/s this is roughly two
+// seconds -- past that, a live stream is better off resynchronising at the next
+// keyframe than delivering stale frames.
+constexpr size_t kMaxQueuedBytes = 512 * 1024;
 // Section of the client config file holding the streaming settings.
 constexpr char kConfigSection[] = "streaming";
 
@@ -117,7 +122,6 @@ FfmpegStreamer::Config FfmpegStreamer::Config::from_file(const std::string &path
         read_field(*section, "height", config.height);
         read_field(*section, "framerate", config.framerate);
         read_field(*section, "bitrate", config.bitrate);
-        read_field(*section, "encoder", config.encoder);
         // Left unset, gop tracks framerate — see the Config declaration.
         if (const auto it = section->find("gop"); it != section->end())
             config.gop = it->get<int>();
@@ -134,8 +138,7 @@ FfmpegStreamer::Config FfmpegStreamer::Config::from_file(const std::string &path
                                      "\" section in " + path + ": " + what);
     };
     require(!config.rtsp_url.empty(), "rtsp_url must not be empty");
-    require(!config.encoder.empty(), "encoder must not be empty");
-    // H.264 needs even dimensions, and so does the I420 packing.
+    // H.264 needs even dimensions, and so does the camera's YUV420 output.
     require(config.width > 0 && config.width % 2 == 0, "width must be positive and even");
     require(config.height > 0 && config.height % 2 == 0, "height must be positive and even");
     require(config.framerate > 0, "framerate must be positive");
@@ -148,13 +151,6 @@ FfmpegStreamer::Config FfmpegStreamer::Config::from_file(const std::string &path
 FfmpegStreamer::FfmpegStreamer(Config config) : config_(std::move(config)) {}
 
 FfmpegStreamer::~FfmpegStreamer() { stop(); }
-
-size_t FfmpegStreamer::frame_bytes() const
-{
-    // Computes size of YUV420 frame
-    // I420: full-size Y plane + two quarter-size chroma planes.
-    return static_cast<size_t>(config_.width) * config_.height * 3 / 2;
-}
 
 void FfmpegStreamer::set_jwt_provider(std::function<std::optional<std::string>()> provider)
 {
@@ -199,24 +195,14 @@ std::vector<std::string> FfmpegStreamer::build_args() const
         "-hide_banner",
         "-loglevel", "warning",
         "-nostdin",
-        // Input: packed I420 frames on stdin, at the camera's frame rate.
-        "-f", "rawvideo",
-        "-pix_fmt", "yuv420p",
-        "-s", std::to_string(config_.width) + "x" + std::to_string(config_.height),
+        // Input: an Annex-B H.264 elementary stream on stdin. It carries no
+        // timestamps of its own, so ffmpeg is told the rate it was encoded at.
+        "-f", "h264",
         "-framerate", std::to_string(config_.framerate),
         "-i", "-",
-        // Encode: the job rpicam-vid used to do before `-c:v copy`.
-        "-c:v", config_.encoder,
-        "-b:v", std::to_string(config_.bitrate),
-        "-g", std::to_string(config_.gop.value_or(config_.framerate)),
-        "-bf", "0",  // no B-frames: they only add latency on a live stream
+        // No encoding here: H264Tee already did it, once, for every consumer.
+        "-c:v", "copy",
     };
-
-    // Software encoding needs to be told not to buffer ahead, or it adds
-    // seconds of latency. The hardware encoder is already low-latency.
-    if (config_.encoder.rfind("libx264", 0) == 0) {
-        args.insert(args.end(), {"-preset", "ultrafast", "-tune", "zerolatency"});
-    }
 
     // Resolved once per spawn (not cached) so a respawn -- e.g. after MediaMTX
     // restarts -- reconnects with a fresh, unexpired token.
@@ -358,12 +344,25 @@ bool FfmpegStreamer::start()
     // A dead ffmpeg must surface as a write() error, not a fatal SIGPIPE.
     std::signal(SIGPIPE, SIG_IGN);
 
+    // A fresh ffmpeg has to be handed a keyframe first, or it spends the rest
+    // of the GOP complaining about references it never saw.
+    request_resync();
+
     if (!spawn())
         return false;
 
     running_ = true;
     writer_ = std::thread(&FfmpegStreamer::writer_loop, this);
     return true;
+}
+
+void FfmpegStreamer::request_resync()
+{
+    std::lock_guard<std::mutex> lock(mtx_);
+    dropped_frames_ += queue_.size();
+    queue_.clear();
+    queued_bytes_ = 0;
+    need_keyframe_ = true;
 }
 
 void FfmpegStreamer::stop()
@@ -379,60 +378,78 @@ void FfmpegStreamer::stop()
     reap();
 }
 
-bool FfmpegStreamer::write_frame(const uint8_t *data, size_t len)
+bool FfmpegStreamer::write_access_unit(const uint8_t *data, size_t len, bool keyframe)
 {
-    if (!running_)
+    if (!running_ || data == nullptr || len == 0)
         return false;
 
-    if (len != frame_bytes()) {
-        spdlog::warn("[Stream] dropping frame of {} bytes, expected {}", len, frame_bytes());
-        return false;
-    }
-
-    bool dropped;
     {
         std::lock_guard<std::mutex> lock(mtx_);
-        dropped = has_frame_;  // the writer never picked up the previous frame
-        pending_.assign(data, data + len);
-        has_frame_ = true;
+
+        // Mid-GOP frames are useless to a decoder that has just (re)started, so
+        // they are discarded until the next keyframe rather than queued.
+        if (need_keyframe_) {
+            if (!keyframe) {
+                ++dropped_frames_;
+                return false;
+            }
+            need_keyframe_ = false;
+        }
+
+        queue_.push_back(AccessUnit{std::vector<uint8_t>(data, data + len), keyframe});
+        queued_bytes_ += len;
+
+        // ffmpeg is not keeping up. Unlike raw frames, encoded ones can't be
+        // dropped individually -- the survivors would reference frames the
+        // decoder never got -- so the backlog goes and the stream picks up
+        // again at the next keyframe.
+        if (queued_bytes_ > kMaxQueuedBytes) {
+            spdlog::warn("[Stream] {} bytes queued for ffmpeg, resyncing at the next keyframe",
+                         queued_bytes_);
+            dropped_frames_ += queue_.size();
+            queue_.clear();
+            queued_bytes_ = 0;
+            need_keyframe_ = true;
+            return false;
+        }
     }
     cv_.notify_one();
-
-    if (dropped)
-        ++dropped_frames_;
-    return !dropped;
+    return true;
 }
 
 void FfmpegStreamer::writer_loop()
 {
-    // Swapped with pending_ so neither buffer has to reallocate per frame.
-    std::vector<uint8_t> frame;
-
     while (running_) {
+        AccessUnit unit;
         {
-            // Blocks while copying the pending frame
             std::unique_lock<std::mutex> lock(mtx_);
-            cv_.wait(lock, [this] { return !running_ || has_frame_; });
+            cv_.wait(lock, [this] { return !running_ || !queue_.empty(); });
             if (!running_)
                 break;
-            frame.swap(pending_);
-            has_frame_ = false;
+            unit = std::move(queue_.front());
+            queue_.pop_front();
+            queued_bytes_ -= unit.data.size();
         }
 
         if (pipe_fd_ < 0) {
-            // ffmpeg died; back off, then bring it back and drop this frame.
+            // ffmpeg died; back off, then bring it back. The new process needs
+            // to start on a keyframe, so whatever is queued (including this
+            // unit) is thrown away.
             if (steady_clock::now() < next_spawn_)
                 continue;
             if (!spawn()) {
                 next_spawn_ = steady_clock::now() + kRestartDelay;
                 continue;
             }
+            request_resync();
+            continue;
         }
 
-        if (!write_all(frame.data(), frame.size())) {
+        if (!write_all(unit.data.data(), unit.data.size())) {
             spdlog::warn("[Stream] ffmpeg pipe broken, restarting in {}s", kRestartDelay.count());
             reap();
             next_spawn_ = steady_clock::now() + kRestartDelay;
+            request_resync();
         }
     }
 }

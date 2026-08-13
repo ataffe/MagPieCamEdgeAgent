@@ -116,7 +116,7 @@ public:
     int get_current_delay() const;
 
     /// Maximum upload interval, in milliseconds, regardless of how many sends have occurred.
-    static constexpr int kMaxDelayMs = 300'000;
+    static constexpr int kMaxDelayMs = 3'600'000;
 
     bool is_activated = false;                       ///< True once the track is confirmed.
     int track_id = 0;                                ///< Unique id (0 until activated).

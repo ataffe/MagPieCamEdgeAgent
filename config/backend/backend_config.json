@@ -16,7 +16,14 @@
         "width": 1280,
         "height": 720,
         "framerate": 30,
-        "bitrate": 2000000,
-        "encoder": "h264_v4l2m2m"
+        "bitrate": 2000000
+    },
+    "video_clips": {
+        "post_event_length_seconds": 10,
+        "pre_event_length_seconds": 10,
+        "send_video_clip_cooldown": 20,
+        "work_dir": "/tmp",
+        "upload_type": "VIDEO_CLIP",
+        "content_type": "video/mp4"
     }
 }

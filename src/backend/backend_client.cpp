@@ -39,8 +39,8 @@ void dump_error_body(const std::string &what, const cpr::Response &response) {
     constexpr char kErrorFile[] = "error.html";
     std::ofstream out(kErrorFile);
     out << response.text;
-    spdlog::error("[BackendClient] {} failed (HTTP {}), wrote response body to {}",
-                  what, response.status_code, kErrorFile);
+    spdlog::error("[BackendClient] {} to {} failed (HTTP {}), wrote response body to {}",
+                  what, response.url.str(), response.status_code, kErrorFile);
 }
 
 // Reads a file fully into a string, stripping stray NUL bytes and trailing
@@ -116,17 +116,34 @@ std::optional<std::string> BackendClient::get_jwt_token() {
     }
 }
 
-std::optional<BackendClient::PresignedUpload> BackendClient::get_presigned_url(const std::string &jwt_token, const std::string &upload_type) {
+std::optional<BackendClient::PresignedUpload> BackendClient::get_presigned_url(const std::string &jwt_token,
+                                                                               const std::string &upload_type,
+                                                                               const std::string &content_type,
+                                                                               const std::string &detection_key) {
+    cpr::Parameters parameters{{"upload_type", upload_type}};
+    // Only sent for the upload types that are keyed to a detection image
+    // (clips); the detection image itself has no key to reference yet. The
+    // backend matches on the image's full storage key, extension included --
+    // the bare uuid out of it is rejected.
+    if (!detection_key.empty()) {
+        parameters.Add({"detection_key", detection_key});
+    }
+
+    // Content-Type here describes the object the URL is being signed for, not
+    // this (empty-bodied) request. The backend bakes it into the signature, so
+    // the PUT that follows has to send the identical value.
     cpr::Response response = cpr::Post(
         cpr::Url{backend_.base_url + backend_.presign_endpoint},
-        cpr::Parameters{{"upload_type", upload_type}},
-        cpr::Header{{"Authorization", "Bearer " + jwt_token}});
+        parameters,
+        cpr::Header{
+            {"Authorization", "Bearer " + jwt_token},
+            {"Content-Type", content_type}});
 
     if (response.status_code != 200) {
         dump_error_body("presign request", response);
         return std::nullopt;
     }
-    spdlog::debug("[BackendClient] Successfully retrieved presigned url with status code: {}", response.status_code);
+    spdlog::debug("[BackendClient] Presign response for {}: {}", response.url.str(), response.text);
 
     try {
         const json parsed = json::parse(response.text);
@@ -158,9 +175,7 @@ bool BackendClient::update_preview_time(const std::string &jwt_token) {
 bool BackendClient::put_to_storage(const PresignedUpload &target,
                                    const std::vector<uint8_t> &image,
                                    const std::string &content_type) {
-    // Verify the storage host against the configured CA bundle. Needed because
-    // storage is fronted by a certificate the system CA store doesn't trust;
-    // an empty ca_cert_path leaves cpr on the system store instead.
+    // Verify the storage host against the configured CA bundle.
     cpr::SslOptions ssl_options;
     if (!backend_.ca_cert_path.empty()) {
         ssl_options = cpr::Ssl(cpr::ssl::CaInfo{fs::path(backend_.ca_cert_path)});
@@ -183,33 +198,34 @@ bool BackendClient::put_to_storage(const PresignedUpload &target,
     return true;
 }
 
-bool BackendClient::upload_image(const std::vector<uint8_t> &image,
-                                 const std::string &content_type,
-                                 const std::string &upload_type) {
-    if (image.empty()) {
-        spdlog::error("[BackendClient] Refusing to upload empty image.");
-        return false;
+std::optional<std::string> BackendClient::upload_object(const std::vector<uint8_t> &object,
+                                                        const std::string &content_type,
+                                                        const std::string &upload_type,
+                                                        const std::string &detection_key) {
+    if (object.empty()) {
+        spdlog::error("[BackendClient] Refusing to upload empty object.");
+        return std::nullopt;
     }
 
     const auto jwt_token = get_jwt_token();
     if (!jwt_token) {
-        return false;
+        return std::nullopt;
     }
 
-    const auto target = get_presigned_url(*jwt_token, upload_type);
+    const auto target = get_presigned_url(*jwt_token, upload_type, content_type, detection_key);
     if (!target) {
-        return false;
+        return std::nullopt;
     }
 
-    if (!put_to_storage(*target, image, content_type)) {
-        return false;
+    if (!put_to_storage(*target, object, content_type)) {
+        return std::nullopt;
     }
 
     if (upload_type == "CAMERA_PREVIEW") {
         update_preview_time(*jwt_token);
     }
 
-    return true;
+    return target->key;
 }
 
 void BackendClient::load_credentials() {
