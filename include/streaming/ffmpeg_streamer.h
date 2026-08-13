@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -18,8 +19,8 @@
 
 namespace byte_track {
 
-// Streams raw video frames to an RTSP server (MediaMTX) by piping them into a
-// child ffmpeg process.
+// Publishes an already-encoded H.264 stream to an RTSP server (MediaMTX) by
+// piping it into a child ffmpeg process that only muxes -- it does not encode.
 //
 // This is the in-process equivalent of the shell pipeline
 //
@@ -28,12 +29,18 @@ namespace byte_track {
 //     | ffmpeg -f h264 -framerate 30 -i - -c:v copy \
 //         -f rtsp -rtsp_transport tcp rtsp://10.0.0.126:8554/<public_camera_id>
 //
+// with H264Tee playing the part of rpicam-vid. Encoding happens once, upstream,
+// and is shared with the event clip recorder; this class is the `-c:v copy`
+// half.
 //
-// write_frame() never blocks the caller: it copies the frame into a single-slot
-// buffer that a writer thread drains into ffmpeg's stdin. If the encoder falls
-// behind, the pending frame is overwritten (dropped) rather than stalling the
-// camera callback — on a live stream the newest frame is the only one worth
-// having. If ffmpeg dies (e.g. MediaMTX restarts) the writer thread respawns it.
+// write_access_unit() never blocks the caller: it copies the access unit onto a
+// queue that a writer thread drains into ffmpeg's stdin. If ffmpeg falls behind,
+// individual frames cannot simply be dropped the way raw ones could -- a P-frame
+// whose reference is missing decodes to garbage -- so the whole queue is
+// discarded and the stream resynchronises at the next keyframe. With inline
+// headers and a one-second GOP that costs at most a second of video. If ffmpeg
+// dies (e.g. MediaMTX restarts) the writer thread respawns it and resynchronises
+// the same way.
 //
 // If MediaMTX requires auth, set_jwt_provider() supplies a fresh JWT before
 // each (re)spawn, appended to rtsp_url as MediaMTX's documented `?token=`
@@ -41,6 +48,10 @@ namespace byte_track {
 // for the backend's own APIs, since MediaMTX validates it the same way.
 class FfmpegStreamer {
 public:
+    // The "streaming" section of the client config, in full. Only rtsp_url and
+    // framerate are used by the streamer itself; width, height, bitrate and gop
+    // describe the camera and the shared H.264 encoder (see H264Tee), and are
+    // parsed here so there is one place that reads the section.
     struct Config {
         // Host and port of the MediaMTX server. The per-camera path segment
         // (the public_camera_id) is appended by set_public_camera_id(), not
@@ -53,10 +64,9 @@ public:
         int bitrate = 2000000;   // bits/sec, matches rpicam-vid --bitrate
         // Keyframe interval (rpicam-vid --intra). Unset means one keyframe per
         // second, i.e. it tracks `framerate` however that ends up being set.
+        // It also bounds how much video is lost to a resync, and how far back
+        // beyond pre_event_length_seconds a clip's pre-roll can reach.
         std::optional<int> gop;
-        // Pi 4 has a hardware H.264 encoder behind bcm2835-codec; libx264 is the
-        // portable (CPU) fallback.
-        std::string encoder = "h264_v4l2m2m/ex";
 
         // Reads the "streaming" section of the client config JSON
         // Every key is optional and falls back to the default above. "gop" is
@@ -84,17 +94,15 @@ public:
     bool start();
 
     // Closes ffmpeg's stdin and waits for it to flush and exit. Idempotent.
-    // Safe to call while another thread is in write_frame(): that call simply
-    // sees the streamer stopped and drops its frame.
+    // Safe to call while another thread is in write_access_unit(): that call
+    // simply sees the streamer stopped and drops its access unit.
     void stop();
 
-    // Hands over one tightly packed I420 (yuv420p) frame of frame_bytes() bytes.
-    // Returns false if the frame replaced an unwritten one (i.e. it was dropped)
-    // or the streamer isn't running.
-    bool write_frame(const uint8_t *data, size_t len);
-
-    // Bytes of a single packed I420 frame: the exact size write_frame() expects.
-    size_t frame_bytes() const;
+    // Hands over one encoded H.264 access unit in Annex-B form. Returns false
+    // if the unit was not queued -- because the streamer isn't running, or
+    // because the stream is waiting for a keyframe to (re)synchronise on, or
+    // because the queue overflowed and was discarded.
+    bool write_access_unit(const uint8_t *data, size_t len, bool keyframe);
 
     // Supplies a fresh JWT before every (re)spawn of ffmpeg. Call this before
     // start(); the provider is invoked from the writer thread, so it must be
@@ -115,15 +123,23 @@ public:
     // Exposed so the URL-building logic is testable without spawning ffmpeg.
     std::string resolved_rtsp_url() const;
 
-    // True between a successful start() and a stop(). Callers use this to skip
-    // the per-frame packing work while the stream is idle, since write_frame()
-    // would only drop those frames anyway.
+    // True between a successful start() and a stop().
     bool is_running() const { return running_.load(); }
 
+    // Access units discarded: those arriving while waiting for a keyframe, plus
+    // everything thrown away when the queue overflowed.
     uint64_t dropped_frames() const { return dropped_frames_.load(); }
     const Config &config() const { return config_; }
 
 private:
+    // One encoded access unit awaiting the writer thread. The keyframe flag
+    // travels with it because a freshly spawned ffmpeg must be fed a keyframe
+    // first.
+    struct AccessUnit {
+        std::vector<uint8_t> data;
+        bool keyframe;
+    };
+
     // Builds the ffmpeg command line for config_ (also used to log it).
     std::vector<std::string> build_args() const;
 
@@ -136,6 +152,9 @@ private:
     bool spawn();
     // Closes the pipe (ffmpeg sees EOF) and reaps the child.
     void reap();
+    // Throws away anything queued and waits for the next keyframe before
+    // feeding ffmpeg again -- what a fresh process, or a broken pipe, needs.
+    void request_resync();
     // write(2) loop; returns false once the pipe is broken.
     bool write_all(const uint8_t *data, size_t len);
     void writer_loop();
@@ -155,8 +174,9 @@ private:
 
     std::mutex mtx_;
     std::condition_variable cv_;
-    std::vector<uint8_t> pending_;
-    bool has_frame_ = false;
+    std::deque<AccessUnit> queue_;
+    size_t queued_bytes_ = 0;
+    bool need_keyframe_ = true;
 };
 
 }  // namespace byte_track

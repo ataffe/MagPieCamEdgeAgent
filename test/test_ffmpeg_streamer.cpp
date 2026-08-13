@@ -6,7 +6,7 @@
 //   - parsing of the "streaming" section of the client config JSON,
 //   - defaults for absent keys, including gop tracking framerate,
 //   - error handling for missing / malformed / mistyped / out-of-range config,
-//   - the frame size the streamer expects for a given resolution.
+//   - the RTSP URL the streamer would publish to.
 
 #include <gtest/gtest.h>
 
@@ -61,8 +61,7 @@ constexpr char kValidConfig[] = R"({
         "width": 1920,
         "height": 1080,
         "framerate": 25,
-        "bitrate": 4000000,
-        "encoder": "libx264"
+        "bitrate": 4000000
     }
 })";
 
@@ -77,7 +76,6 @@ TEST_F(FfmpegStreamerConfigTest, ParsesStreamingFields) {
     EXPECT_EQ(config.height, 1080);
     EXPECT_EQ(config.framerate, 25);
     EXPECT_EQ(config.bitrate, 4000000);
-    EXPECT_EQ(config.encoder, "libx264");
 }
 
 TEST_F(FfmpegStreamerConfigTest, GopIsUnsetWhenAbsentSoItTracksFramerate) {
@@ -104,7 +102,6 @@ TEST_F(FfmpegStreamerConfigTest, AbsentKeysKeepDefaults) {
     EXPECT_EQ(config.rtsp_url, defaults.rtsp_url);
     EXPECT_EQ(config.framerate, defaults.framerate);
     EXPECT_EQ(config.bitrate, defaults.bitrate);
-    EXPECT_EQ(config.encoder, defaults.encoder);
 }
 
 TEST_F(FfmpegStreamerConfigTest, EmptyStreamingSectionYieldsDefaults) {
@@ -116,7 +113,6 @@ TEST_F(FfmpegStreamerConfigTest, EmptyStreamingSectionYieldsDefaults) {
     EXPECT_EQ(config.height, defaults.height);
     EXPECT_EQ(config.framerate, defaults.framerate);
     EXPECT_EQ(config.bitrate, defaults.bitrate);
-    EXPECT_EQ(config.encoder, defaults.encoder);
 }
 
 TEST_F(FfmpegStreamerConfigTest, MissingFileThrows) {
@@ -154,22 +150,8 @@ TEST_F(FfmpegStreamerConfigTest, OutOfRangeValuesThrow) {
                  std::runtime_error);
     EXPECT_THROW(FfmpegStreamer::Config::from_file(write_config(R"({"streaming": {"rtsp_url": ""}})")),
                  std::runtime_error);
-    EXPECT_THROW(FfmpegStreamer::Config::from_file(write_config(R"({"streaming": {"encoder": ""}})")),
-                 std::runtime_error);
     EXPECT_THROW(FfmpegStreamer::Config::from_file(write_config(R"({"streaming": {"gop": 0}})")),
                  std::runtime_error);
-}
-
-// --- frame_bytes -------------------------------------------------------------
-
-TEST(FfmpegStreamerTest, FrameBytesMatchesI420Size) {
-    FfmpegStreamer::Config config;
-    config.width = 1280;
-    config.height = 720;
-
-    // Full-size luma plane plus two quarter-size chroma planes.
-    const FfmpegStreamer streamer(config);
-    EXPECT_EQ(streamer.frame_bytes(), 1280u * 720u * 3 / 2);
 }
 
 // --- resolved_rtsp_url --------------------------------------------------------

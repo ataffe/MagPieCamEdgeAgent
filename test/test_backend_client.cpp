@@ -8,7 +8,7 @@
 //   - loading cached device credentials without hitting the network,
 //   - failing fast when credentials are missing and registration can't even
 //     read a device serial number (still no network needed),
-//   - the empty-image guard in upload_image() (returns before any network I/O).
+//   - the empty-object guard in upload_object() (returns before any network I/O).
 
 #include <gtest/gtest.h>
 
@@ -177,9 +177,9 @@ TEST_F(BackendClientConfigTest, ThrowsWhenCachedCredentialsAreMalformed) {
         std::runtime_error);
 }
 
-// --- upload_image input validation -------------------------------------------
+// --- upload_object input validation -------------------------------------------
 
-TEST_F(BackendClientConfigTest, UploadEmptyImageReturnsFalseWithoutNetwork) {
+TEST_F(BackendClientConfigTest, UploadEmptyObjectReturnsFalseWithoutNetwork) {
     write_file("device_credentials.json", R"({
         "public_camera_id": "cam-123",
         "device_token": "tok-abc"
@@ -188,5 +188,5 @@ TEST_F(BackendClientConfigTest, UploadEmptyImageReturnsFalseWithoutNetwork) {
 
     // An empty buffer is rejected before any HTTP request is attempted, so this
     // stays hermetic even with no backend reachable.
-    EXPECT_FALSE(client.upload_image(std::vector<uint8_t>{}));
+    EXPECT_FALSE(client.upload_object(std::vector<uint8_t>{}).has_value());
 }
