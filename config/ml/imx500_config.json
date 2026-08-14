@@ -3,7 +3,7 @@
     {
         "max_detections": 100,
         "threshold": 0.01,
-        "network_file": "/home/alex/ScoutCamCameraClient/ml/imx500_models/yolo11n_500imgs_conf_005.rpk",
+        "network_file": "/home/alex/MagPieCamEdgeAgent/ml/imx500_models/yolo11n_500imgs_conf_005.rpk",
         "classes":
         [
             "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",

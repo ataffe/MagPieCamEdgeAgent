@@ -57,9 +57,9 @@ using byte_track::Vec4;
   namespace {
       // Paths the standalone app needs. The post-process file loads only the IMX500
       // firmware-upload stage; the libs dir is the same one run.sh stages.
-      const char *kPostProcFile = "/home/alex/ScoutCamCameraClient/config/ml/imx500_config.json";
-      const char *kPostProcLibs = "/home/alex/ScoutCamCameraClient/libs";
-      const char *kBackendConfigPath = "/home/alex/ScoutCamCameraClient/config/backend/backend_config.json";
+      const char *kPostProcFile = "/home/alex/MagPieCamEdgeAgent/config/ml/imx500_config.json";
+      const char *kPostProcLibs = "/home/alex/MagPieCamEdgeAgent/libs";
+      const char *kBackendConfigPath = "/home/alex/MagPieCamEdgeAgent/config/backend/backend_config.json";
 
 
 

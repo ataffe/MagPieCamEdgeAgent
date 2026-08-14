@@ -6,9 +6,9 @@
         "registration_endpoint": "/v1/cameras/register/",
         "update_preview_time_endpoint": "/v1/cameras/update_preview_time/",
         "serial_number_file": "/sys/firmware/devicetree/base/serial-number",
-        "claim_token_path": "/home/alex/ScoutCamCameraClient/credentials/claim_token",
-        "credentials_path": "/home/alex/ScoutCamCameraClient/credentials/credentials.json",
-        "ca_cert_path": "/home/alex/ScoutCamCameraClient/certs/cert.pem"
+        "claim_token_path": "/home/alex/MagPieCamEdgeAgent/credentials/claim_token",
+        "credentials_path": "/home/alex/MagPieCamEdgeAgent/credentials/credentials.json",
+        "ca_cert_path": "/home/alex/MagPieCamEdgeAgent/certs/cert.pem"
     },
     "streaming": {
         "rtsp_url": "rtsp://10.0.0.126:8554",
