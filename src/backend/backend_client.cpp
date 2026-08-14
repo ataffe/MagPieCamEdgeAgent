@@ -78,7 +78,7 @@ BackendClient::BackendClient(const std::string &config_path) {
 BackendClient::BackendConfig BackendClient::load_backend_config(const std::string &path) {
     const json backend = load_json_file(path);
     try {
-        const auto &svc = backend.at("scout_cam_webservice");
+        const auto &svc = backend.at("magpiecam-core");
         return BackendConfig{
             svc.at("base_url").get<std::string>(),
             svc.at("token_endpoint").get<std::string>(),

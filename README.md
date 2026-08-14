@@ -1,11 +1,10 @@
-# ScoutCamCameraClient
-A camera client designed to run on a Raspberry Pi Zero 2W. The client uses the Raspberry Pi AI camera to 
-detect moving objects and sends images to the Scout Cam Event Processor to determine if a user rule should be
-triggered.
+# MagPieCam Edge Agent
+An edge agent designed to run on a Raspberry Pi Zero 2W. The agent uses the [Raspberry Pi AI camera](https://www.raspberrypi.com/documentation/accessories/ai-camera.html) to 
+track moving objects. Each time an object is detected and image is sent to the MagPieCam-Core service and a video clip is uploaded
+to S3. Images are uploaded with an exponential backoff while objects are in view.
 
 ### System Diagram
-![Scout cam system diagram.](https://github.com/ataffe/ScoutCamAssets/blob/main/system_diagram/scout-cam-system-diagram-camera-client.png?raw=true)
-[Scout Cam Web Service](https://github.com/ataffe/ScoutCamEventProcessor) - Handles CRUD operations for Users, Cameras, and Rules.
+![MagPieCam system diagram.](https://github.com/ataffe/MagPieCam-Assets/blob/main/system_diagram/magpie-cam-system-diagram-edge-agent.png?raw=true)
+[MagPieCam-Core](https://github.com/ataffe/MagPieCam-Core) - Handles CRUD operations for Users, Cameras, Rules, Notifications and runs jobs.
 
-[Scout Cam Event Processor](https://github.com/ataffe/GuardianCamCameraClient) - Processes images received from cameras and send users a push notification if the 
-image matches one or more of the users rules.
+[MagPieCam-iOS](https://github.com/ataffe/MagPieCam-iOS) - iOS app and main frontend for the system.

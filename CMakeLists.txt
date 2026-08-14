@@ -84,23 +84,23 @@ if(BUILD_CAMERA_APP)
     )
     FetchContent_MakeAvailable(argparse)
 
-    add_executable(scout_cam_client src/main_track.cpp
+    add_executable(magpiecam_edge_agent src/edge_agent.cpp
             src/parsers/imx500_yolo_parser.cpp
             src/streaming/ffmpeg_streamer.cpp
             src/streaming/h264_tee.cpp
             src/streaming/stream_command_poller.cpp
             src/streaming/video_clip_recorder.cpp)
-    target_include_directories(scout_cam_client PRIVATE
+    target_include_directories(magpiecam_edge_agent PRIVATE
             include
             /usr/include/rpicam-apps)
-    target_compile_options(scout_cam_client PRIVATE
+    target_compile_options(magpiecam_edge_agent PRIVATE
             ${LIBCAMERA_CFLAGS} ${OPENCV_CFLAGS})
     # Link only the OpenCV modules actually used (imgproc, imgcodecs) rather than
     # every module in opencv4.pc. Pulling in the full list drags in opencv_hdf,
     # which links the system libcurl (versioned symbols) — conflicting with the
     # unversioned libcurl built from source by cpr's FetchContent and breaking
     # the link with undefined `curl_*@CURL_OPENSSL_4` references.
-    target_link_libraries(scout_cam_client PRIVATE
+    target_link_libraries(magpiecam_edge_agent PRIVATE
             bytetrack
             rpicam_app # the rpicam-apps shared library
             argparse

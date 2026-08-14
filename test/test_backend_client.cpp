@@ -60,7 +60,7 @@ protected:
                                      const std::string &serial_number_file = "",
                                      const std::string &claim_token_path = "") {
         json cfg;
-        cfg["scout_cam_webservice"] = {
+        cfg["magpiecam-core"] = {
             {"base_url", "http://10.0.0.125:8000"},
             {"token_endpoint", "/v1/auth/token/"},
             {"presign_endpoint", "/v1/uploads/presign"},
@@ -80,7 +80,7 @@ protected:
 };
 
 constexpr char kValidBackend[] = R"({
-    "scout_cam_webservice": {
+    "magpiecam-core": {
         "base_url": "http://10.0.0.125:8000",
         "token_endpoint": "/v1/auth/token/",
         "presign_endpoint": "/v1/uploads/presign",
@@ -128,7 +128,7 @@ TEST_F(BackendClientConfigTest, BackendConfigMalformedJsonThrows) {
 
 TEST_F(BackendClientConfigTest, BackendConfigMissingKeyThrows) {
     constexpr char kMissingPresign[] = R"({
-        "scout_cam_webservice": {
+        "magpiecam-core": {
             "base_url": "http://host",
             "token_endpoint": "/v1/auth/token/"
         }

@@ -74,7 +74,7 @@ public:
         // "start" keeps streaming after the viewer has gone.
         std::chrono::seconds min_poll_interval{5};
 
-        // Reads base_url from the "scout_cam_webservice" section of the client
+        // Reads base_url from the "magpiecam-core" section of the client
         // config JSON and stream_command_endpoint from the "streaming" one --
         // the two sections those keys actually live in. The three durations may
         // be overridden with the optional "streaming" keys
