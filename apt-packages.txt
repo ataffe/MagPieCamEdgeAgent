@@ -1,4 +1,4 @@
-# System (apt) packages required to build ScoutCamCameraClient.
+# System (apt) packages required to build MagPieCamEdgeAgent.
 # Install with: ./install-deps.sh
 #
 # Lines starting with # are comments; blank lines are ignored.

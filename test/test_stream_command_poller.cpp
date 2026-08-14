@@ -58,7 +58,7 @@ protected:
 // Mirrors config/backend/backend_config.json: base_url lives in the webservice
 // section, the command endpoint in the streaming one.
 constexpr char kValidConfig[] = R"({
-    "scout_cam_webservice": {
+    "magpiecam-core": {
         "base_url": "http://10.0.0.126:8000"
     },
     "streaming": {
@@ -133,7 +133,7 @@ TEST_F(StreamCommandPollerConfigTest, TimeoutsDefaultWhenAbsent) {
 
 TEST_F(StreamCommandPollerConfigTest, ExplicitTimeoutsAreParsed) {
     const auto config = StreamCommandPoller::Config::from_file(write_config(R"({
-        "scout_cam_webservice": {"base_url": "http://host"},
+        "magpiecam-core": {"base_url": "http://host"},
         "streaming": {
             "stream_command_endpoint": "/cmd",
             "command_poll_timeout_seconds": 60,
@@ -161,18 +161,18 @@ TEST_F(StreamCommandPollerConfigTest, MissingSectionThrows) {
                      write_config(R"({"streaming": {"stream_command_endpoint": "/cmd"}})")),
                  std::runtime_error);
     EXPECT_THROW(StreamCommandPoller::Config::from_file(
-                     write_config(R"({"scout_cam_webservice": {"base_url": "http://host"}})")),
+                     write_config(R"({"magpiecam-core": {"base_url": "http://host"}})")),
                  std::runtime_error);
 }
 
 TEST_F(StreamCommandPollerConfigTest, MissingRequiredKeyThrows) {
     EXPECT_THROW(StreamCommandPoller::Config::from_file(write_config(R"({
-                     "scout_cam_webservice": {},
+                     "magpiecam-core": {},
                      "streaming": {"stream_command_endpoint": "/cmd"}
                  })")),
                  std::runtime_error);
     EXPECT_THROW(StreamCommandPoller::Config::from_file(write_config(R"({
-                     "scout_cam_webservice": {"base_url": "http://host"},
+                     "magpiecam-core": {"base_url": "http://host"},
                      "streaming": {}
                  })")),
                  std::runtime_error);
@@ -180,12 +180,12 @@ TEST_F(StreamCommandPollerConfigTest, MissingRequiredKeyThrows) {
 
 TEST_F(StreamCommandPollerConfigTest, WrongTypeThrows) {
     EXPECT_THROW(StreamCommandPoller::Config::from_file(write_config(R"({
-                     "scout_cam_webservice": {"base_url": 8000},
+                     "magpiecam-core": {"base_url": 8000},
                      "streaming": {"stream_command_endpoint": "/cmd"}
                  })")),
                  std::runtime_error);
     EXPECT_THROW(StreamCommandPoller::Config::from_file(write_config(R"({
-                     "scout_cam_webservice": {"base_url": "http://host"},
+                     "magpiecam-core": {"base_url": "http://host"},
                      "streaming": {"stream_command_endpoint": "/cmd",
                                    "command_poll_timeout_seconds": "soon"}
                  })")),
@@ -194,7 +194,7 @@ TEST_F(StreamCommandPollerConfigTest, WrongTypeThrows) {
 
 TEST_F(StreamCommandPollerConfigTest, OutOfRangeValuesThrow) {
     const auto with_streaming = [](const std::string &streaming) {
-        return R"({"scout_cam_webservice": {"base_url": "http://host"}, "streaming": )" +
+        return R"({"magpiecam-core": {"base_url": "http://host"}, "streaming": )" +
                streaming + "}";
     };
     EXPECT_THROW(StreamCommandPoller::Config::from_file(
@@ -211,7 +211,7 @@ TEST_F(StreamCommandPollerConfigTest, OutOfRangeValuesThrow) {
                      R"({"stream_command_endpoint": "/cmd", "command_min_poll_interval_seconds": 0})"))),
                  std::runtime_error);
     EXPECT_THROW(StreamCommandPoller::Config::from_file(write_config(
-                     R"({"scout_cam_webservice": {"base_url": ""},
+                     R"({"magpiecam-core": {"base_url": ""},
                          "streaming": {"stream_command_endpoint": "/cmd"}})")),
                  std::runtime_error);
 }

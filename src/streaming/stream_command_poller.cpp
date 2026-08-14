@@ -19,7 +19,7 @@ using json = nlohmann::json;
 
 namespace {
 // Sections of the client config file the poller's settings are split across.
-constexpr char kWebserviceSection[] = "scout_cam_webservice";
+constexpr char kWebserviceSection[] = "magpiecam-core";
 constexpr char kStreamingSection[] = "streaming";
 
 std::string to_lower(std::string value)
