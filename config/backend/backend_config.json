@@ -1,5 +1,5 @@
 {
-    "scout_cam_webservice": {
+    "magpiecam-core": {
         "base_url": "http://10.0.0.126:8000",
         "token_endpoint": "/v1/cameras/auth/token/",
         "presign_endpoint": "/v1/cameras/presigned_upload_url/",

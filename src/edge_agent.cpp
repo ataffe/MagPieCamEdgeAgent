@@ -164,7 +164,7 @@ void add_args(argparse::ArgumentParser &parser)
 
       RPiCamApp app(std::make_unique<VideoOptions>());
       Options *opts = app.GetOptions();
-      argparse::ArgumentParser parser("Scout Camera Client");
+      argparse::ArgumentParser parser("MagPieCam Edge Agent");
 
       // Parse standard rpicam-apps flags (--width, --height, --framerate, etc.).
       if (char *dummy[1]; !opts->Parse(1, dummy))

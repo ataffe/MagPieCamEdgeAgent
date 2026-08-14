@@ -53,7 +53,7 @@ protected:
 // Mirrors config/backend/backend_config.json: the streaming section sits
 // alongside the webservice section in the same file.
 constexpr char kValidConfig[] = R"({
-    "scout_cam_webservice": {
+    "magpiecam-core": {
         "base_url": "http://10.0.0.125:8000"
     },
     "streaming": {
@@ -127,7 +127,7 @@ TEST_F(FfmpegStreamerConfigTest, MalformedJsonThrows) {
 
 TEST_F(FfmpegStreamerConfigTest, MissingStreamingSectionThrows) {
     EXPECT_THROW(
-        FfmpegStreamer::Config::from_file(write_config(R"({"scout_cam_webservice": {}})")),
+        FfmpegStreamer::Config::from_file(write_config(R"({"magpiecam-core": {}})")),
         std::runtime_error);
 }
 
