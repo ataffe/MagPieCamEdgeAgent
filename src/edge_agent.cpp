@@ -43,6 +43,7 @@
 #include "tracking/byte_tracker.h"
 #include "parsers/imx500_yolo_parser.h"
 #include "backend/backend_client.h"
+#include "streaming/bbox_ws_server.h"
 #include "streaming/ffmpeg_streamer.h"
 #include "streaming/h264_tee.h"
 #include "streaming/stream_command_poller.h"
@@ -379,6 +380,21 @@ void add_args(argparse::ArgumentParser &parser)
           }
       }
 
+      // --- Bounding-box debug overlay ---------------------------------------
+      // Serves the tracker's per-frame output over a WebSocket so the boxes can
+      // be drawn on the video while debugging. Built alongside the streamer but
+      // left stopped: it only runs between a "bbox_on" command and either
+      // "bbox_off" or the stream stopping. Without a streamer there is no video
+      // to overlay, so there is nothing to build.
+      std::optional<byte_track::BboxWsServer> bbox_server;
+      if (streamer) {
+          try {
+              bbox_server.emplace(byte_track::BboxWsServer::Config::from_file(kBackendConfigPath));
+          } catch (const std::exception &err) {
+              spdlog::error("[Bbox] Overlay unavailable: {}", err.what());
+          }
+      }
+
       // --- Stream command long poll ----------------------------------------
       // Asks the backend whether anyone wants to watch, and starts/stops the
       // streamer to match. Without a backend client there is no JWT to poll
@@ -402,11 +418,40 @@ void add_args(argparse::ArgumentParser &parser)
               if (!streamer->start())
                   spdlog::error("[Stream] Could not start ffmpeg for the requested stream");
           });
-          poller->set_on_stop([&streamer]() {
+          poller->set_on_stop([&streamer, &bbox_server]() {
               if (!streamer->is_running())
                   return;
               spdlog::info("[Stream] Stopping ffmpeg ({} frames dropped)", streamer->dropped_frames());
               streamer->stop();
+              // The overlay exists to be drawn over this stream, so it goes with
+              // it; watching again needs a fresh "bbox_on".
+              if (bbox_server && bbox_server->is_running()) {
+                  spdlog::info("[Bbox] Stream stopped, stopping the overlay too");
+                  bbox_server->stop();
+              }
+          });
+          poller->set_on_bbox_on([&streamer, &bbox_server]() {
+              if (!bbox_server) {
+                  spdlog::warn("[Bbox] \"bbox_on\" ignored: the overlay failed to configure");
+                  return;
+              }
+              // Strictly follows the stream: with no video to draw on, an
+              // overlay socket would just sit there serving boxes for nothing.
+              if (!streamer->is_running()) {
+                  spdlog::warn("[Bbox] \"bbox_on\" ignored: the stream is not running");
+                  return;
+              }
+              if (bbox_server->is_running())
+                  return;  // already on; the backend may re-send as a nudge
+              if (!bbox_server->start())
+                  spdlog::error("[Bbox] Could not start the overlay server");
+          });
+          poller->set_on_bbox_off([&bbox_server]() {
+              if (!bbox_server || !bbox_server->is_running())
+                  return;
+              spdlog::info("[Bbox] Stopping the overlay ({} frames dropped)",
+                           bbox_server->dropped_frames());
+              bbox_server->stop();
           });
           poller->start();
       }
@@ -432,6 +477,9 @@ void add_args(argparse::ArgumentParser &parser)
       };
 
       bool send_frame = false;
+      // Counts only frames the NPU actually ran on, which is what the overlay
+      // publishes; it lets a client spot gaps rather than assume every frame.
+      int64_t bbox_frame_id = 0;
       // Backdated so the first preview goes out seconds after startup instead of
       // a full interval which lets the sensor's auto-exposure and white balance settle
       constexpr auto kStartupPreviewDelay = seconds(2);
@@ -461,6 +509,29 @@ void add_args(argparse::ArgumentParser &parser)
                       send_frame = true;
                       t->increment_send_count();
                   }
+              }
+
+              // Debug overlay: publish this frame's tracks, normalized out of
+              // the network's input-pixel space (which is what the tracker runs
+              // in, since the parser is called with bbox_normalization=false)
+              // so a client can scale them to whatever size it renders at.
+              if (bbox_server && bbox_server->is_running()) {
+                  const double scale = bbox_server->config().inference_input_size;
+                  std::vector<byte_track::BboxWsServer::TrackedBox> boxes;
+                  boxes.reserve(tracks.size());
+                  for (const auto &t : tracks) {
+                      const auto tlwh = t->tlwh();
+                      byte_track::BboxWsServer::TrackedBox box;
+                      box.x = tlwh[0] / scale;
+                      box.y = tlwh[1] / scale;
+                      box.w = tlwh[2] / scale;
+                      box.h = tlwh[3] / scale;
+                      box.score = t->score;
+                      box.label = t->label;
+                      box.track_id = t->track_id;
+                      boxes.push_back(box);
+                  }
+                  bbox_server->broadcast(boxes, bbox_frame_id++);
               }
           }
 
@@ -547,6 +618,11 @@ void add_args(argparse::ArgumentParser &parser)
       if (poller)
           poller->stop();
       // After the callback can no longer fire, so no frame arrives mid-shutdown.
+      if (bbox_server && bbox_server->is_running()) {
+          spdlog::info("[Bbox] Stopping the overlay ({} frames dropped)",
+                       bbox_server->dropped_frames());
+          bbox_server->stop();
+      }
       if (streamer && streamer->is_running()) {
           spdlog::info("[Stream] Stopping ffmpeg ({} access units dropped)", streamer->dropped_frames());
           streamer->stop();

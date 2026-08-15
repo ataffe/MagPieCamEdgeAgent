@@ -18,6 +18,12 @@
         "framerate": 30,
         "bitrate": 2000000
     },
+    "bbox_debug": {
+        "bind_address": "127.0.0.1",
+        "port": 8081,
+        "inference_input_size": 640,
+        "max_clients": 4
+    },
     "video_clips": {
         "post_event_length_seconds": 10,
         "pre_event_length_seconds": 10,
