@@ -86,6 +86,7 @@ if(BUILD_CAMERA_APP)
 
     add_executable(magpiecam_edge_agent src/edge_agent.cpp
             src/parsers/imx500_yolo_parser.cpp
+            src/streaming/bbox_ws_server.cpp
             src/streaming/ffmpeg_streamer.cpp
             src/streaming/h264_tee.cpp
             src/streaming/stream_command_poller.cpp
@@ -137,6 +138,7 @@ if(BUILD_TESTING)
             test/test_byte_tracker.cpp
             test/test_imx500_yolo_parser.cpp
             test/test_backend_client.cpp
+            test/test_bbox_ws_server.cpp
             test/test_ffmpeg_streamer.cpp
             test/test_stream_command_poller.cpp
             test/test_video_clip_recorder.cpp
@@ -145,6 +147,7 @@ if(BUILD_TESTING)
             # compile it straight in. h264_tee.cpp is the exception: it wraps
             # rpicam-apps' encoder, so it can only build on the Pi.
             src/parsers/imx500_yolo_parser.cpp
+            src/streaming/bbox_ws_server.cpp
             src/streaming/ffmpeg_streamer.cpp
             src/streaming/stream_command_poller.cpp
             src/streaming/video_clip_recorder.cpp)

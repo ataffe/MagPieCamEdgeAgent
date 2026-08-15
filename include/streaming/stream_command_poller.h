@@ -20,6 +20,10 @@ enum class StreamCommand {
     None,
     Start,
     Stop,
+    // Debug aids, not stream control: turn the bounding-box overlay's WebSocket
+    // server on and off while a stream is running. See BboxWsServer.
+    BboxOn,
+    BboxOff,
 };
 
 // Parses a long-poll response body, e.g. {"command": "start"}. The comparison
@@ -106,6 +110,13 @@ public:
     void set_on_start(std::function<void()> handler);
     void set_on_stop(std::function<void()> handler);
 
+    // Invoked when the backend answers "bbox_on" / "bbox_off". Optional: left
+    // unset, those commands are parsed and logged but do nothing. Like the two
+    // above they run on the poller thread and must be idempotent, since a
+    // standing command is re-delivered on every poll.
+    void set_on_bbox_on(std::function<void()> handler);
+    void set_on_bbox_off(std::function<void()> handler);
+
     // Starts the polling thread. Idempotent.
     void start();
 
@@ -132,6 +143,8 @@ private:
     std::function<std::optional<std::string>()> jwt_provider_;
     std::function<void()> on_start_;
     std::function<void()> on_stop_;
+    std::function<void()> on_bbox_on_;
+    std::function<void()> on_bbox_off_;
 
     std::thread poller_;
     std::atomic<bool> running_{false};

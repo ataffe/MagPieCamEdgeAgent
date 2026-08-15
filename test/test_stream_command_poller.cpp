@@ -71,10 +71,15 @@ constexpr char kValidConfig[] = R"({
 
 // --- parse_stream_command ----------------------------------------------------
 
-TEST(ParseStreamCommandTest, ParsesTheThreeKnownCommands) {
+TEST(ParseStreamCommandTest, ParsesTheKnownCommands) {
     EXPECT_EQ(parse_stream_command(R"({"command": "start"})"), StreamCommand::Start);
     EXPECT_EQ(parse_stream_command(R"({"command": "stop"})"), StreamCommand::Stop);
     EXPECT_EQ(parse_stream_command(R"({"command": "none"})"), StreamCommand::None);
+}
+
+TEST(ParseStreamCommandTest, ParsesTheBboxDebugCommands) {
+    EXPECT_EQ(parse_stream_command(R"({"command": "bbox_on"})"), StreamCommand::BboxOn);
+    EXPECT_EQ(parse_stream_command(R"({"command": "bbox_off"})"), StreamCommand::BboxOff);
 }
 
 TEST(ParseStreamCommandTest, IsCaseInsensitive) {
@@ -82,6 +87,25 @@ TEST(ParseStreamCommandTest, IsCaseInsensitive) {
     // so don't let a change of case silently stop the stream from starting.
     EXPECT_EQ(parse_stream_command(R"({"command": "START"})"), StreamCommand::Start);
     EXPECT_EQ(parse_stream_command(R"({"command": "Stop"})"), StreamCommand::Stop);
+    EXPECT_EQ(parse_stream_command(R"({"command": "BBOX_ON"})"), StreamCommand::BboxOn);
+    EXPECT_EQ(parse_stream_command(R"({"command": "Bbox_Off"})"), StreamCommand::BboxOff);
+}
+
+TEST(ParseStreamCommandTest, CommandNamesRoundTripThroughToString) {
+    for (const auto command : {StreamCommand::Start, StreamCommand::Stop, StreamCommand::None,
+                               StreamCommand::BboxOn, StreamCommand::BboxOff}) {
+        const std::string body = std::string(R"({"command": ")") +
+                                 byte_track::to_string(command) + R"("})";
+        EXPECT_EQ(parse_stream_command(body), command) << body;
+    }
+}
+
+TEST(ParseStreamCommandTest, NearMissesOfTheBboxCommandsAreRejected) {
+    // A hyphen or a space instead of the underscore is the likely typo, and it
+    // must not be mistaken for a command this build understands.
+    EXPECT_FALSE(parse_stream_command(R"({"command": "bbox-on"})").has_value());
+    EXPECT_FALSE(parse_stream_command(R"({"command": "bbox on"})").has_value());
+    EXPECT_FALSE(parse_stream_command(R"({"command": "bbox"})").has_value());
 }
 
 TEST(ParseStreamCommandTest, IgnoresOtherKeys) {

@@ -53,15 +53,21 @@ std::optional<StreamCommand> parse_stream_command(const std::string &body)
         return StreamCommand::Stop;
     if (command == "none")
         return StreamCommand::None;
+    if (command == "bbox_on")
+        return StreamCommand::BboxOn;
+    if (command == "bbox_off")
+        return StreamCommand::BboxOff;
     return std::nullopt;
 }
 
 const char *to_string(StreamCommand command)
 {
     switch (command) {
-        case StreamCommand::Start: return "start";
-        case StreamCommand::Stop:  return "stop";
-        case StreamCommand::None:  return "none";
+        case StreamCommand::Start:   return "start";
+        case StreamCommand::Stop:    return "stop";
+        case StreamCommand::None:    return "none";
+        case StreamCommand::BboxOn:  return "bbox_on";
+        case StreamCommand::BboxOff: return "bbox_off";
     }
     return "unknown";
 }
@@ -136,6 +142,16 @@ void StreamCommandPoller::set_on_start(std::function<void()> handler)
 void StreamCommandPoller::set_on_stop(std::function<void()> handler)
 {
     on_stop_ = std::move(handler);
+}
+
+void StreamCommandPoller::set_on_bbox_on(std::function<void()> handler)
+{
+    on_bbox_on_ = std::move(handler);
+}
+
+void StreamCommandPoller::set_on_bbox_off(std::function<void()> handler)
+{
+    on_bbox_off_ = std::move(handler);
 }
 
 void StreamCommandPoller::start()
@@ -248,11 +264,16 @@ void StreamCommandPoller::poll_loop()
             else
                 spdlog::debug("[StreamCmd] Still \"{}\"", to_string(*command));
 
-            if (*command == StreamCommand::Start) {
-                if (on_start_)
-                    on_start_();
-            } else if (on_stop_) {
-                on_stop_();
+            const auto dispatch = [](const std::function<void()> &handler) {
+                if (handler)
+                    handler();
+            };
+            switch (*command) {
+                case StreamCommand::Start:   dispatch(on_start_);    break;
+                case StreamCommand::Stop:    dispatch(on_stop_);     break;
+                case StreamCommand::BboxOn:  dispatch(on_bbox_on_);  break;
+                case StreamCommand::BboxOff: dispatch(on_bbox_off_); break;
+                case StreamCommand::None:    break;  // handled above
             }
         }
         last_command = command;
