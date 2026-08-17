@@ -1,4 +1,4 @@
-// Copyright © 2026 Alexander Taffe
+
 //
 // Unit tests for FfmpegStreamer. Spawning ffmpeg and publishing to an RTSP
 // server needs a live MediaMTX (and a camera), so these tests cover the

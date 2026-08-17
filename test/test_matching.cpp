@@ -1,4 +1,4 @@
-// Copyright © 2026 Alexander Taffe
+
 //
 // Unit tests for the IoU / assignment helpers in matching.cpp.
 

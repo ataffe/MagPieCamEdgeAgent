@@ -1,4 +1,4 @@
-// Copyright © 2026 Alexander Taffe
+
 //
 // Unit tests for VideoClipRecorder. A real clip needs a camera, the Pi's H.264
 // encoder and a backend, so these tests cover the deterministic surface:

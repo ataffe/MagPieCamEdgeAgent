@@ -1,4 +1,4 @@
-// Copyright © 2026 Alexander Taffe
+
 
 #pragma once
 #include <memory>

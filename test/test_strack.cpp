@@ -1,4 +1,4 @@
-// Copyright © 2026 Alexander Taffe
+
 //
 // Unit tests for STrack: box conversions, the shared id counter, and the
 // activation lifecycle.

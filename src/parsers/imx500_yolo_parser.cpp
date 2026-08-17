@@ -1,4 +1,3 @@
-// Copyright © 2026 Alexander Taffe
 
 #include "parsers/imx500_yolo_parser.h"
 #include <algorithm>

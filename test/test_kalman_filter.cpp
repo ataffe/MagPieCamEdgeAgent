@@ -1,4 +1,4 @@
-// Copyright © 2026 Alexander Taffe
+
 //
 // Unit tests for the 8-dim constant-velocity KalmanFilter.
 

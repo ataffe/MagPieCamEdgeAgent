@@ -1,4 +1,4 @@
-// Copyright © 2026 Alexander Taffe
+
 
 #include "streaming/stream_command_poller.h"
 
