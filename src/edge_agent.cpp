@@ -1,4 +1,4 @@
-// Copyright © 2026 Alexander Taffe
+
 
   // src/main_track.cpp
   //

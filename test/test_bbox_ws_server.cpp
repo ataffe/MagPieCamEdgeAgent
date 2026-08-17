@@ -1,4 +1,4 @@
-// Copyright © 2026 Alexander Taffe
+
 
 #include "streaming/bbox_ws_server.h"
 

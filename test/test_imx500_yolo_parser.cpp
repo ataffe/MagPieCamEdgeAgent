@@ -1,4 +1,4 @@
-// Copyright © 2026 Alexander Taffe
+
 //
 // Unit tests for parse_imx500_detections(). The parser decodes two raw buffers:
 //   - `info`: the CnnOutputTensorInfo blob (network name + per-tensor shapes),

@@ -1,4 +1,4 @@
-// Copyright © 2026 Alexander Taffe
+
 //
 // Unit tests for BackendClient. The HTTP flow (registration / token / presign /
 // S3 PUT) needs a live backend, so these tests cover the deterministic,

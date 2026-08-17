@@ -1,4 +1,4 @@
-// Copyright © 2026 Alexander Taffe
+
 
 #include "tracking/kalman_filter.h"
 

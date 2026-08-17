@@ -1,4 +1,4 @@
-// Copyright © 2026 Alexander Taffe
+
 //
 // Unit tests for StreamCommandPoller. The poll loop itself needs a live
 // backend holding a request open, so these tests cover the deterministic,

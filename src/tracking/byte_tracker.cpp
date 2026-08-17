@@ -1,4 +1,4 @@
-// Copyright © 2026 Alexander Taffe
+
 
 #include "../../include/tracking/byte_tracker.h"
 #include "tracking/byte_tracker.h"

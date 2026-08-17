@@ -1,4 +1,4 @@
-// Copyright © 2026 Alexander Taffe
+
 //
 // End-to-end tests for BYTETracker.update over short detection sequences.
 
